@@ -1097,3 +1097,45 @@ fn every_shipped_example_loads() {
         "expected the shipped examples, found {checked}"
     );
 }
+
+/// Invariant 1, end to end: an armed sweep against a config whose rules name
+/// nothing in the tree removes nothing, however disposable the tree looks.
+#[test]
+fn invariant_1_an_armed_sweep_removes_nothing_no_rule_names() {
+    let t = Tree::new();
+
+    // Replace the rule with one that names nothing present.
+    let text = std::fs::read_to_string(&t.config).unwrap();
+    let text = text.replace(
+        "dir_name = \"target\"",
+        "dir_name = \"nothing-called-this\"",
+    );
+    std::fs::write(&t.config, text).unwrap();
+    t.arm();
+
+    // A tree full of shapes any heuristic would call disposable.
+    for shape in ["build", "dist", "node_modules", "__pycache__", ".venv"] {
+        std::fs::create_dir_all(t.path(&format!("code/proj/{shape}"))).unwrap();
+        std::fs::write(
+            t.path(&format!("code/proj/{shape}/artifact")),
+            vec![b'x'; 1000],
+        )
+        .unwrap();
+    }
+    std::fs::write(t.path("code/proj/.gitignore"), b"*\n").unwrap();
+
+    let out = t
+        .reap()
+        .args(["sweep", "--tier", "2", "--apply"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(NOTHING_TO_DO));
+    assert!(t.target().exists(), "removed a directory no rule names");
+    for shape in ["build", "dist", "node_modules", "__pycache__", ".venv"] {
+        assert!(
+            t.path(&format!("code/proj/{shape}")).exists(),
+            "{shape} was removed, but no rule named it"
+        );
+    }
+}

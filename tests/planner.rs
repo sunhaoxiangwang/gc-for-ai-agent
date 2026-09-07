@@ -339,3 +339,105 @@ fn case_sensitivity_is_declared_not_inherited_from_the_filesystem() {
         expect(&[f.path("code/proj/Target")])
     );
 }
+
+/// Invariant 1: nothing is deletable unless a configured rule names it.
+///
+/// A tree full of directories that any heuristic would call disposable, and a
+/// config whose one rule names none of them. The planner must propose nothing.
+/// There is no inference here, and this test is what says so.
+#[test]
+fn invariant_1_nothing_is_a_candidate_unless_a_rule_names_it() {
+    let f = Fixture::new();
+    for shape in [
+        "code/proj/target",
+        "code/proj/node_modules",
+        "code/proj/build",
+        "code/proj/dist",
+        "code/proj/__pycache__",
+        "code/proj/.venv",
+        "code/proj/DerivedData",
+        "code/proj/.next",
+        "code/proj/vendor",
+        "code/proj/tmp",
+    ] {
+        f.file(&format!("{shape}/artifact"), 4096);
+    }
+    f.touch("code/proj/Cargo.toml");
+    f.touch("code/proj/package.json");
+
+    // One rule, and it names something none of the above are.
+    let config = f.config(
+        r#"
+[global]
+quarantine = "{base}/quarantine"
+
+[[root]]
+path = "{base}/code"
+max_depth = 6
+
+[[rule]]
+name = "only-this"
+kind = "path"
+tier = 0
+dir_name = "nothing-called-this"
+min_idle = "0s"
+"#,
+    );
+
+    assert_eq!(
+        candidate_paths(&config, "linux", opts()),
+        BTreeSet::new(),
+        "the planner proposed something no rule named"
+    );
+}
+
+/// Invariant 1, the other direction: adding the rule is the only thing that
+/// changes, and it selects exactly what it names.
+#[test]
+fn invariant_1_adding_the_rule_is_what_makes_it_a_candidate() {
+    let f = Fixture::new();
+    f.touch("code/proj/Cargo.toml");
+    f.file("code/proj/target/artifact", 4096);
+    f.file("code/proj/node_modules/dep/index.js", 4096);
+
+    let without = f.config(
+        r#"
+[global]
+quarantine = "{base}/quarantine"
+
+[[root]]
+path = "{base}/code"
+
+[[rule]]
+name = "unrelated"
+kind = "path"
+tier = 0
+dir_name = "nothing-called-this"
+min_idle = "0s"
+"#,
+    );
+    assert_eq!(candidate_paths(&without, "linux", opts()), BTreeSet::new());
+
+    let with = f.config(
+        r#"
+[global]
+quarantine = "{base}/quarantine"
+
+[[root]]
+path = "{base}/code"
+
+[[rule]]
+name = "cargo-target"
+kind = "path"
+tier = 0
+dir_name = "target"
+require_sibling = "Cargo.toml"
+min_idle = "0s"
+"#,
+    );
+    assert_eq!(
+        candidate_paths(&with, "linux", opts()),
+        expect(&[f.path("code/proj/target")]),
+        "the rule selected something other than exactly what it names"
+    );
+}

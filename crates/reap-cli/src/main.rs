@@ -3,6 +3,10 @@
 //!
 //! This is the only crate in the workspace that mutates the filesystem.
 
+// Every syscall this crate needs is reachable through std or through
+// `reap-platform`. `unsafe` belongs in exactly one module of one crate.
+#![forbid(unsafe_code)]
+
 mod cli;
 mod commands;
 mod context;
@@ -10,6 +14,7 @@ mod executor;
 mod exit;
 mod output;
 mod quarantine;
+mod scheduler;
 mod select;
 
 use clap::Parser;
@@ -69,5 +74,7 @@ fn run(cli: &Cli) -> anyhow::Result<i32> {
         Command::Explain(args) => commands::explain::run(&ctx, args),
         Command::Sweep(args) => commands::sweep::run(&ctx, args),
         Command::GcSession(args) => commands::gc_session::run(&ctx, args),
+        Command::Install(args) => commands::install::install(&ctx, args),
+        Command::Uninstall(args) => commands::install::uninstall(&ctx, args),
     }
 }

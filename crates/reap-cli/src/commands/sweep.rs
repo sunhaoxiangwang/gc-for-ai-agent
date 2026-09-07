@@ -37,13 +37,109 @@ pub fn gate(ctx: &Context, apply: bool) -> Gate {
 }
 
 pub fn run(ctx: &Context, args: &SweepArgs) -> Result<i32> {
-    let opts = PlanOptions {
-        now: ctx.started_at,
-        max_tier: args.tier,
-        ..Default::default()
+    match args.until_free {
+        Some(target) => until_free(ctx, args, target),
+        None => {
+            let opts = PlanOptions {
+                now: ctx.started_at,
+                max_tier: args.tier,
+                ..Default::default()
+            };
+            let sel = select(ctx, opts);
+            execute(ctx, sel, args.apply, args.tier, "sweep", None)
+        }
+    }
+}
+
+/// Escalates through the tiers until the filesystem has enough free space.
+///
+/// Tier 0 first, then a fresh look at free space, then tier 1, and so on. The
+/// re-check between tiers is the point: a machine that got what it needed from
+/// the cheap tier never pays the cost of throwing away a shared cache that
+/// every later build has to rebuild.
+///
+/// Free space is read through `Context::pressure`, which allows for purgeable
+/// APFS snapshot space. Escalating because of space the machine will hand back
+/// on demand is exactly the spurious escalation this guards against.
+fn until_free(ctx: &Context, args: &SweepArgs, target_pct: u8) -> Result<i32> {
+    let style = Style::detect(ctx.args.no_color, ctx.args.json);
+
+    let met = |ctx: &Context| -> Option<bool> {
+        ctx.pressure()
+            .map(|p| p.effective_pct >= f64::from(target_pct))
     };
-    let sel = select(ctx, opts);
-    execute(ctx, sel, args.apply, args.tier, "sweep", None)
+
+    match met(ctx) {
+        None => anyhow::bail!(
+            "could not measure free space on the filesystem holding {}",
+            ctx.config.quarantine.display()
+        ),
+        Some(true) => {
+            if !ctx.args.json {
+                let p = ctx.pressure().expect("measured a moment ago");
+                println!(
+                    "{}",
+                    style.dim(&format!(
+                        "Already {:.1}% free, at or above the {target_pct}% target. Nothing to do.",
+                        p.effective_pct
+                    ))
+                );
+                if p.snapshots > 0 {
+                    println!(
+                        "{}",
+                        style.dim(&format!(
+                            "({} local snapshots; {:.1}% free before allowing for purgeable space)",
+                            p.snapshots, p.raw_pct
+                        ))
+                    );
+                }
+            }
+            return Ok(exit::NOTHING_TO_DO);
+        }
+        Some(false) => {}
+    }
+
+    let mut last = exit::NOTHING_TO_DO;
+    for tier in 0..=reap_core::config::Tier::MAX {
+        let opts = PlanOptions {
+            now: ctx.started_at,
+            max_tier: tier,
+            ..Default::default()
+        };
+        let sel = select(ctx, opts);
+        last = execute(ctx, sel, args.apply, tier, "sweep", Some(tier))?;
+
+        // Without --apply nothing was freed, so re-checking would loop through
+        // every tier reporting the same shortfall. Show the full escalation
+        // once and stop.
+        if !matches!(gate(ctx, args.apply), Gate::Armed) {
+            break;
+        }
+        if met(ctx).unwrap_or(true) {
+            if !ctx.args.json {
+                println!(
+                    "{}",
+                    style.bold(&format!("Reached the {target_pct}% target at tier {tier}."))
+                );
+            }
+            return Ok(last);
+        }
+    }
+
+    if matches!(gate(ctx, args.apply), Gate::Armed) && !ctx.args.json {
+        let p = ctx.pressure();
+        println!(
+            "{}",
+            style.yellow(&format!(
+                "Ran every tier and free space is {}, still short of the {target_pct}% target.",
+                match p {
+                    Some(p) => format!("{:.1}%", p.effective_pct),
+                    None => "unknown".to_owned(),
+                }
+            ))
+        );
+    }
+    Ok(last)
 }
 
 /// Runs a prepared selection, applying it when both opt-ins allow.

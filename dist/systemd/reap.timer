@@ -1,0 +1,22 @@
+# Hourly trigger for reap.service.
+#
+#     systemctl --user enable --now reap.timer
+#     systemctl --user list-timers reap.timer
+
+[Unit]
+Description=Reclaim build artifacts and tool caches, hourly
+Documentation=https://github.com/OWNER/reap
+
+[Timer]
+OnCalendar=hourly
+
+# Spread the load so a fleet of machines does not all sweep on the hour.
+RandomizedDelaySec=15m
+
+# Catch up after the machine was asleep, which on a laptop is most of the time.
+Persistent=true
+
+Unit=reap.service
+
+[Install]
+WantedBy=timers.target

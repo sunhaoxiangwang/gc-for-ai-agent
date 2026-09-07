@@ -61,6 +61,12 @@ pub enum Command {
     /// Reclaim one supervised session's leftovers. Safe on an unknown id and
     /// safe to call twice.
     GcSession(GcSessionArgs),
+
+    /// Install the scheduler unit for this platform.
+    Install(InstallArgs),
+
+    /// Remove the scheduler unit, leaving configuration and data alone.
+    Uninstall(UninstallArgs),
 }
 
 #[derive(Debug, Args)]
@@ -78,13 +84,50 @@ pub struct ReportArgs {
 #[derive(Debug, Args)]
 pub struct SweepArgs {
     /// Highest tier to reclaim. A plain sweep touches tier 0 only.
-    #[arg(long, value_name = "N", default_value_t = 0)]
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 0,
+        conflicts_with = "until_free"
+    )]
     pub tier: u8,
+
+    /// Escalate through the tiers until this percentage of the filesystem is
+    /// free, stopping as soon as the target is met.
+    #[arg(long, value_name = "PCT")]
+    pub until_free: Option<u8>,
 
     /// Actually remove things. Requires dry_run = false in the config as well;
     /// neither opt-in is sufficient on its own.
     #[arg(long)]
     pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InstallArgs {
+    /// Install a systemd user timer. The default on Linux.
+    #[arg(long, conflicts_with = "launchd")]
+    pub systemd: bool,
+
+    /// Install a launchd agent. The default on macOS.
+    #[arg(long)]
+    pub launchd: bool,
+
+    /// Print the unit files and the activation commands without writing or
+    /// running anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Remove the systemd user timer. The default on Linux.
+    #[arg(long, conflicts_with = "launchd")]
+    pub systemd: bool,
+
+    /// Remove the launchd agent. The default on macOS.
+    #[arg(long)]
+    pub launchd: bool,
 }
 
 #[derive(Debug, Args)]

@@ -740,3 +740,178 @@ fn doctor_reports_a_quarantine_that_cannot_receive_a_rename() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("failure:"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// Scheduling
+// ---------------------------------------------------------------------------
+
+/// `install --dry-run` writes nothing and runs nothing.
+#[test]
+fn install_dry_run_only_prints() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = t
+        .reap()
+        .env("HOME", &fake_home)
+        .args(["install", "--systemd", "--dry-run"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Would install a systemd unit"), "{text}");
+    assert!(text.contains("ReadWritePaths="), "{text}");
+    assert!(
+        text.contains("systemctl --user enable --now reap.timer"),
+        "{text}"
+    );
+    assert!(
+        !fake_home.join(".config/systemd").exists(),
+        "--dry-run wrote a file"
+    );
+}
+
+/// The generated systemd unit confines writes to the declared roots and the
+/// quarantine directory, independently of whether the config is correct.
+#[test]
+fn the_generated_systemd_unit_lists_every_root_in_read_write_paths() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = t
+        .reap()
+        .env("HOME", &fake_home)
+        .args(["install", "--systemd", "--dry-run"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("ReadWritePaths="))
+        .expect("no ReadWritePaths line");
+    assert!(
+        line.contains(&t.path("code").display().to_string()),
+        "{line}"
+    );
+    assert!(
+        line.contains(&t.quarantine().display().to_string()),
+        "{line}"
+    );
+    assert!(text.contains("ProtectSystem=strict"), "{text}");
+}
+
+/// Install writes the unit files, and uninstall removes them and says what it
+/// left behind.
+///
+/// Activation is deliberately made to fail here (an empty `PATH` means no
+/// `systemctl`), so the test never registers a real job on the machine running
+/// it. The activation commands themselves are asserted by the dry-run test.
+#[test]
+fn install_writes_units_and_uninstall_removes_them_without_touching_data() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = t
+        .reap()
+        .env("HOME", &fake_home)
+        .env("PATH", "/nonexistent")
+        .args(["install", "--systemd"])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(PARTIAL),
+        "activation failed, so the exit code should say so"
+    );
+    let service = fake_home.join(".config/systemd/user/reap.service");
+    let timer = fake_home.join(".config/systemd/user/reap.timer");
+    assert!(service.exists(), "the service file was not written");
+    assert!(timer.exists(), "the timer file was not written");
+
+    // The user is told how to finish by hand.
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("systemctl --user enable --now reap.timer"),
+        "{text}"
+    );
+
+    let out = t
+        .reap()
+        .env("HOME", &fake_home)
+        .env("PATH", "/nonexistent")
+        .args(["uninstall", "--systemd"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(!service.exists(), "the service file survived uninstall");
+    assert!(!timer.exists(), "the timer file survived uninstall");
+
+    // Uninstall touches nothing the user configured or reclaimed.
+    assert!(t.config.exists(), "uninstall removed the configuration");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Left in place:"), "{text}");
+    assert!(text.contains("your configuration"), "{text}");
+    assert!(
+        text.contains("Nothing you configured or reclaimed was touched"),
+        "{text}"
+    );
+}
+
+/// Uninstalling when nothing is installed is not an error.
+#[test]
+fn uninstall_is_safe_when_nothing_was_installed() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = t
+        .reap()
+        .env("HOME", &fake_home)
+        .env("PATH", "/nonexistent")
+        .args(["uninstall", "--systemd"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("No systemd unit was installed"));
+}
+
+/// `--until-free` stops as soon as the target is met, without escalating.
+#[test]
+fn until_free_does_nothing_when_the_target_is_already_met() {
+    let t = Tree::new();
+    t.arm();
+    // 1% free is a target any machine that can run this test already meets.
+    let out = t
+        .reap()
+        .args(["sweep", "--until-free", "1", "--apply"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(NOTHING_TO_DO));
+    assert!(
+        t.target().exists(),
+        "an already-satisfied target still reclaimed something"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Nothing to do"), "{text}");
+}
+
+#[test]
+fn tier_and_until_free_are_mutually_exclusive() {
+    let t = Tree::new();
+    let out = t
+        .reap()
+        .args(["sweep", "--tier", "2", "--until-free", "50"])
+        .output()
+        .unwrap();
+    assert_ne!(out.status.code(), Some(SUCCESS));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
+}

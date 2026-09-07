@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Reclaim build artifacts and tool caches, hourly.
+
+  Install:
+      cp dist/launchd/io.github.reap.plist ~/Library/LaunchAgents/
+      mkdir -p ~/Library/Logs/reap
+      launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.reap.plist
+
+  Check that it is loaded:
+      launchctl print gui/$(id -u)/io.github.reap
+
+  Remove:
+      launchctl bootout gui/$(id -u)/io.github.reap
+      rm ~/Library/LaunchAgents/io.github.reap.plist
+
+  `reap install` writes the same thing with your paths already filled in.
+  Edit the two marked values if you install by hand.
+
+  Note: launchd has no equivalent of systemd's ReadWritePaths. On macOS the
+  config deny list and the containment guard are the entire sandbox.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.reap</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- EDIT: the path to the binary. -->
+    <string>/usr/local/bin/reap</string>
+    <string>--config</string>
+    <!-- EDIT: the path to your config. launchd does not expand ~. -->
+    <string>/Users/YOUR-USERNAME/.config/reap/reap.toml</string>
+    <string>sweep</string>
+    <string>--until-free</string>
+    <string>25</string>
+    <string>--apply</string>
+  </array>
+
+  <!-- Hourly. launchd coalesces missed runs after a sleep rather than queueing
+       one per hour the machine was asleep. -->
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Stay out of the way of whatever the person is actually doing. -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR-USERNAME/Library/Logs/reap/reap.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR-USERNAME/Library/Logs/reap/reap.log</string>
+</dict>
+</plist>

@@ -74,8 +74,24 @@ fn invariant_3_core_forbids_unsafe() {
 
 /// `unsafe` is confined to the platform crate, where the macOS process
 /// inspection FFI lives.
+///
+/// Both halves matter: the source scan catches a stray occurrence, and the
+/// `#![forbid(unsafe_code)]` attributes make the compiler enforce the same rule
+/// so the scan can never be the only thing standing in the way.
 #[test]
 fn unsafe_appears_only_in_the_platform_crate() {
+    for (crate_name, entry) in [
+        ("reap-core", "crates/reap-core/src/lib.rs"),
+        ("reap-cli", "crates/reap-cli/src/main.rs"),
+    ] {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(entry))
+            .unwrap_or_else(|e| panic!("read {entry}: {e}"));
+        assert!(
+            text.contains("#![forbid(unsafe_code)]"),
+            "{crate_name} must declare #![forbid(unsafe_code)]"
+        );
+    }
+
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
     let mut findings = Vec::new();
     for crate_name in ["reap-core", "reap-cli"] {

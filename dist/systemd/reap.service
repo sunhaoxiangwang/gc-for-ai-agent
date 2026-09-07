@@ -1,0 +1,44 @@
+# Reclaim build artifacts and tool caches.
+#
+# Install as a user unit:
+#     mkdir -p ~/.config/systemd/user
+#     cp dist/systemd/reap.* ~/.config/systemd/user/
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now reap.timer
+#
+# `reap install --systemd` writes the same thing with your paths already
+# filled in. Edit the three marked lines if you install by hand.
+
+[Unit]
+Description=Reclaim build artifacts and tool caches
+Documentation=https://github.com/OWNER/reap
+After=default.target
+
+[Service]
+Type=oneshot
+
+# EDIT: the path to the binary and to your config.
+ExecStart=/usr/local/bin/reap --config %h/.config/reap/reap.toml sweep --until-free 25 --apply
+
+# Stay out of the way of whatever the machine is actually doing.
+Nice=10
+IOSchedulingClass=idle
+
+# A second layer of defence that does not depend on the configuration being
+# correct. The filesystem is read-only to this unit except for the paths listed
+# below, so no bug in reap can express a write anywhere else. This is a real
+# sandbox enforced by the kernel, not a promise made by the program.
+#
+# macOS has no launchd equivalent of this. There, the config deny list and the
+# containment guard are the entire sandbox.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=false
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+
+# EDIT: every [[root]] in your config, plus the quarantine directory.
+ReadWritePaths=%h/code %h/.cache/reap/quarantine
+
+[Install]
+WantedBy=default.target

@@ -188,54 +188,55 @@ pub fn run(ctx: &Context) -> Result<i32> {
     // --- free space --------------------------------------------------------
     say!("");
     say!("{}", style.bold("Disk"));
-    match ctx.volume.stat(nearest_existing(&ctx.config.quarantine)) {
-        Err(e) => {
-            say!(
-                "  {} could not measure free space: {e}",
-                style.yellow("warn")
-            );
-            f.warn(format!("could not measure free space: {e}"));
+    // Read through the same helper the pressure logic uses, so doctor and
+    // `sweep --until-free` can never disagree about how full the disk is.
+    match ctx.pressure() {
+        None => {
+            say!("  {} could not measure free space", style.yellow("warn"));
+            f.warn("could not measure free space on the quarantine filesystem");
         }
-        Ok(stats) => {
+        Some(p) => {
             say!(
                 "  free            {} of {} ({:.1}%)",
-                human_bytes(stats.available_bytes),
-                human_bytes(stats.total_bytes),
-                stats.available_pct()
+                human_bytes(p.available_bytes),
+                human_bytes(p.total_bytes),
+                p.raw_pct
             );
             say!(
                 "  low water       {}%   target {}%",
                 ctx.config.low_water_pct,
                 ctx.config.target_free_pct
             );
-            let snapshots = ctx
-                .volume
-                .purgeable_snapshots(Path::new("/"))
-                .unwrap_or_default();
-            if !snapshots.is_empty() || ctx.os == "macos" {
-                let with_slack = stats
-                    .available_bytes
-                    .saturating_add(ctx.config.apfs_snapshot_slack_bytes);
-                let pct = if stats.total_bytes > 0 {
-                    with_slack as f64 / stats.total_bytes as f64 * 100.0
-                } else {
-                    0.0
-                };
-                say!("  local snapshots {}", snapshots.len());
+            say!("  local snapshots {}", p.snapshots);
+            if p.snapshots > 0 {
                 say!(
-                    "  free + slack    {} ({pct:.1}%)  using apfs_snapshot_slack_gb = {}",
-                    human_bytes(with_slack),
+                    "  effective free  {} ({:.1}%)  after apfs_snapshot_slack_gb = {}",
+                    human_bytes(p.effective_bytes),
+                    p.effective_pct,
                     ctx.config.apfs_snapshot_slack_bytes / (1024 * 1024 * 1024)
                 );
-                if !snapshots.is_empty() {
-                    say!(
-                        "  {}",
-                        style.dim(
-                            "Space held by local snapshots is reported as used but is released \
-                             on demand, so free space can look worse than it is."
-                        )
-                    );
-                }
+                say!(
+                    "  {}",
+                    style.dim(
+                        "Space held by local snapshots is reported as used but released on \
+                         demand, so free space looks worse than it is. Pressure calculations \
+                         use the effective number."
+                    )
+                );
+            } else if ctx.os == "macos" {
+                say!(
+                    "  {}",
+                    style.dim(
+                        "No local snapshots, so free space is what it says. The slack allowance \
+                         applies only when snapshots exist."
+                    )
+                );
+            }
+            if p.effective_pct < f64::from(ctx.config.low_water_pct) {
+                f.warn(format!(
+                    "free space is {:.1}%, below the low-water mark of {}%",
+                    p.effective_pct, ctx.config.low_water_pct
+                ));
             }
         }
     }
@@ -412,19 +413,6 @@ pub fn run(ctx: &Context) -> Result<i32> {
     } else {
         exit::PARTIAL
     })
-}
-
-/// The nearest existing ancestor of `path`, for asking about free space before
-/// the directory itself exists.
-fn nearest_existing(path: &Path) -> &Path {
-    let mut probe = path;
-    while !probe.exists() {
-        match probe.parent() {
-            Some(p) => probe = p,
-            None => break,
-        }
-    }
-    probe
 }
 
 /// The macOS Full Disk Access message, with the exact place to fix it.

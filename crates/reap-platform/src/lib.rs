@@ -119,6 +119,14 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
+/// The current user id.
+///
+/// Needed for the launchd domain target (`gui/<uid>`), which is otherwise a
+/// subprocess call to `id -u` for something the process already knows.
+pub fn current_uid() -> u32 {
+    nix::unistd::getuid().as_raw()
+}
+
 /// Widens a `statvfs` field to `u64`.
 ///
 /// The field widths differ between Linux and macOS, so the same expression is

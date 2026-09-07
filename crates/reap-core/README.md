@@ -1,7 +1,7 @@
 # reap-core
 
 Configuration, rule matching, the planner and the guard stack for
-[`reap`](https://github.com/OWNER/reap), a guarded reclaimer for build artifacts
+[`reap`](https://github.com/sunhaoxiangwang/gc-for-ai-agent), a guarded reclaimer for build artifacts
 and tool caches.
 
 This crate is read-only by construction. It contains no call that creates,

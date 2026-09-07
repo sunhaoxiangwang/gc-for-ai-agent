@@ -66,7 +66,7 @@ not planned.
 ### Prebuilt binary
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/OWNER/reap/main/dist/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sunhaoxiangwang/gc-for-ai-agent/main/dist/install.sh | sh
 ```
 
 The script detects your platform, downloads the matching release asset, verifies
@@ -76,7 +76,7 @@ scheduler, and it never will without you asking.
 
 If you would rather not pipe a script into a shell, read
 [dist/install.sh](dist/install.sh) first, or download the asset for your
-platform from the [releases page](https://github.com/OWNER/reap/releases) by
+platform from the [releases page](https://github.com/sunhaoxiangwang/gc-for-ai-agent/releases) by
 hand.
 
 ### From crates.io
@@ -91,7 +91,7 @@ crates.io belongs to an unrelated project.)
 ### From source
 
 ```sh
-git clone https://github.com/OWNER/reap
+git clone https://github.com/sunhaoxiangwang/gc-for-ai-agent
 cd reap
 cargo build --release
 ```

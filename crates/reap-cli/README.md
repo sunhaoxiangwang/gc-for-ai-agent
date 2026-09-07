@@ -30,7 +30,7 @@ Full documentation, the guard stack, worked configurations for Rust, Node,
 Python, Xcode, Go, Gradle and Docker, and the scheduling setup for systemd and
 launchd are in the repository:
 
-<https://github.com/OWNER/reap>
+<https://github.com/sunhaoxiangwang/gc-for-ai-agent>
 
 ## License
 

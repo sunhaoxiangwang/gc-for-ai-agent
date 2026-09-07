@@ -5,7 +5,7 @@
 
 [Unit]
 Description=Reclaim build artifacts and tool caches, hourly
-Documentation=https://github.com/OWNER/reap
+Documentation=https://github.com/sunhaoxiangwang/gc-for-ai-agent
 
 [Timer]
 OnCalendar=hourly

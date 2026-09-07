@@ -10,16 +10,16 @@
 # separate, deliberate steps you take yourself.
 #
 # Usage:
-#     curl -fsSL https://raw.githubusercontent.com/OWNER/reap/main/dist/install.sh | sh
+#     curl -fsSL https://raw.githubusercontent.com/sunhaoxiangwang/gc-for-ai-agent/main/dist/install.sh | sh
 #
 # Environment:
 #     REAP_VERSION   version to install (default: latest release)
 #     REAP_BIN_DIR   where to install  (default: /usr/local/bin)
-#     REAP_REPO      owner/name        (default: OWNER/reap)
+#     REAP_REPO      owner/name        (default: sunhaoxiangwang/gc-for-ai-agent)
 
 set -eu
 
-REPO="${REAP_REPO:-OWNER/reap}"
+REPO="${REAP_REPO:-sunhaoxiangwang/gc-for-ai-agent}"
 BIN_DIR="${REAP_BIN_DIR:-/usr/local/bin}"
 
 say() { printf '%s\n' "$*"; }

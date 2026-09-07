@@ -87,7 +87,7 @@ pub fn systemd_units(config: &Config, binary: &Path, config_path: &Path, home: &
         "\
 [Unit]
 Description=Reclaim build artifacts and tool caches
-Documentation=https://github.com/OWNER/reap
+Documentation=https://github.com/sunhaoxiangwang/gc-for-ai-agent
 # Do not fight the machine for disk bandwidth while it is busy starting up.
 After=default.target
 
@@ -119,7 +119,7 @@ WantedBy=default.target
     let timer = "\
 [Unit]
 Description=Reclaim build artifacts and tool caches, hourly
-Documentation=https://github.com/OWNER/reap
+Documentation=https://github.com/sunhaoxiangwang/gc-for-ai-agent
 
 [Timer]
 OnCalendar=hourly

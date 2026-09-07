@@ -34,7 +34,7 @@ exact commands, and writes nothing.
 ```ini
 [Unit]
 Description=Reclaim build artifacts and tool caches
-Documentation=https://github.com/OWNER/reap
+Documentation=https://github.com/sunhaoxiangwang/gc-for-ai-agent
 After=default.target
 
 [Service]

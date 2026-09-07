@@ -1,6 +1,6 @@
 # reap-platform
 
-Platform abstraction for [`reap`](https://github.com/OWNER/reap): process
+Platform abstraction for [`reap`](https://github.com/sunhaoxiangwang/gc-for-ai-agent): process
 inspection, volume statistics, and the git-ignore oracle.
 
 Everything that has to ask the operating system a question lives behind one of

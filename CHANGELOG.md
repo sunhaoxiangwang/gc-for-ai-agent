@@ -55,5 +55,5 @@ First release.
   spanning two filesystems need one config each.
 - Recovery is possible only for an interrupted run, not a completed one.
 
-[Unreleased]: https://github.com/OWNER/reap/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/reap/releases/tag/v0.1.0
+[Unreleased]: https://github.com/sunhaoxiangwang/gc-for-ai-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/sunhaoxiangwang/gc-for-ai-agent/releases/tag/v0.1.0

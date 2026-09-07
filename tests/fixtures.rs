@@ -221,3 +221,147 @@ fn fixture_git_repo_reports_ignored_paths() {
         "target should be ignored in the fixture repo"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test doubles and a assembled world for the guard stack
+// ---------------------------------------------------------------------------
+
+use reap_core::guard::{self, GuardContext};
+use reap_core::heartbeat::HeartbeatIndex;
+use reap_core::plan::{Candidate, PlanOptions};
+use reap_platform::{GitOracle, IgnoreStatus, ProcessInspector};
+
+/// A process table the test controls.
+pub struct FakeInspector {
+    pub cwds: Vec<PathBuf>,
+    pub open: Vec<PathBuf>,
+    /// When set, inspection fails. The liveness guard must treat that as a
+    /// rejection, not as "nothing is running".
+    pub error: Option<String>,
+}
+
+impl FakeInspector {
+    pub fn empty() -> Self {
+        Self {
+            cwds: Vec::new(),
+            open: Vec::new(),
+            error: None,
+        }
+    }
+    pub fn with_cwd(path: &Path) -> Self {
+        Self {
+            cwds: vec![path.to_path_buf()],
+            ..Self::empty()
+        }
+    }
+    pub fn with_open(path: &Path) -> Self {
+        Self {
+            open: vec![path.to_path_buf()],
+            ..Self::empty()
+        }
+    }
+    pub fn failing(message: &str) -> Self {
+        Self {
+            error: Some(message.to_owned()),
+            ..Self::empty()
+        }
+    }
+}
+
+impl ProcessInspector for FakeInspector {
+    fn live_cwds(&self) -> anyhow::Result<Vec<PathBuf>> {
+        match &self.error {
+            Some(e) => Err(anyhow::anyhow!("{e}")),
+            None => Ok(self.cwds.clone()),
+        }
+    }
+    fn open_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        match &self.error {
+            Some(e) => Err(anyhow::anyhow!("{e}")),
+            None => Ok(self.open.clone()),
+        }
+    }
+}
+
+/// A git that always gives the same answer, for driving the error paths that a
+/// real repository will not produce on demand.
+pub struct FakeGit(pub IgnoreStatus);
+
+impl GitOracle for FakeGit {
+    fn check_ignore(&self, _worktree: &Path, _path: &Path) -> IgnoreStatus {
+        self.0.clone()
+    }
+}
+
+/// Everything the guard stack reads from outside itself, owned so a test can
+/// hand out a `GuardContext` borrowing from it.
+pub struct World {
+    pub config: Config,
+    pub inspector: Box<dyn ProcessInspector>,
+    pub git: Box<dyn GitOracle>,
+    pub heartbeats: HeartbeatIndex,
+    pub roots: Vec<PathBuf>,
+    pub now: SystemTime,
+    pub pid_alive: Box<dyn Fn(u32) -> bool>,
+}
+
+impl World {
+    /// The default world: real git, no running processes, heartbeats as they
+    /// are on disk, and no pid considered alive.
+    pub fn new(config: Config) -> Self {
+        let heartbeats = HeartbeatIndex::load(&config.heartbeat_dir);
+        let roots = guard::canonical_roots(&config);
+        Self {
+            config,
+            inspector: Box::new(FakeInspector::empty()),
+            git: Box::new(reap_platform::GitCli),
+            heartbeats,
+            roots,
+            now: SystemTime::now(),
+            pid_alive: Box::new(|_| false),
+        }
+    }
+
+    pub fn with_inspector(mut self, i: impl ProcessInspector + 'static) -> Self {
+        self.inspector = Box::new(i);
+        self
+    }
+
+    pub fn with_git(mut self, g: impl GitOracle + 'static) -> Self {
+        self.git = Box::new(g);
+        self
+    }
+
+    pub fn with_live_pids(mut self) -> Self {
+        self.pid_alive = Box::new(|_| true);
+        self
+    }
+
+    pub fn ctx(&self) -> GuardContext<'_> {
+        GuardContext {
+            config: &self.config,
+            now: self.now,
+            inspector: &*self.inspector,
+            git: &*self.git,
+            heartbeats: &self.heartbeats,
+            pid_alive: &*self.pid_alive,
+            roots: &self.roots,
+        }
+    }
+}
+
+impl Fixture {
+    /// Builds the candidate a rule would produce for `rel`, so a guard test can
+    /// work with the same value the planner emits.
+    pub fn candidate(&self, config: &Config, rel: &str) -> Candidate {
+        let path = self.path(rel);
+        reap_core::plan::explain(
+            config,
+            reap_platform::os_name(),
+            &path,
+            PlanOptions::default(),
+        )
+        .candidate
+        .unwrap_or_else(|| panic!("no rule matched {rel}; the test's config cannot see it"))
+    }
+}

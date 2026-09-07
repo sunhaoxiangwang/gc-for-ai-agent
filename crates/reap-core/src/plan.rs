@@ -26,6 +26,9 @@ pub struct Candidate {
     pub tier: Tier,
     /// Depth below the root, where the root itself is 0.
     pub depth: usize,
+    /// The depth cap that applied, so the depth guard can re-check a candidate
+    /// it did not construct itself.
+    pub depth_cap: usize,
     /// On-disk size of the tree.
     pub bytes: u64,
     /// How long the directory has looked untouched.
@@ -255,6 +258,7 @@ pub fn plan(config: &Config, os: &str, opts: PlanOptions) -> Plan {
                 rule: rule.name.clone(),
                 tier: rule.tier,
                 depth: entry.depth(),
+                depth_cap: depth_cap(rule, root.max_depth),
                 bytes: size.bytes,
                 idle,
                 min_idle: rule.min_idle,
@@ -493,6 +497,7 @@ pub fn explain(config: &Config, os: &str, path: &Path, opts: PlanOptions) -> Pat
                     rule: rule.name.clone(),
                     tier: rule.tier,
                     depth,
+                    depth_cap: depth_cap(rule, root.max_depth),
                     bytes: size.bytes,
                     idle,
                     min_idle: rule.min_idle,

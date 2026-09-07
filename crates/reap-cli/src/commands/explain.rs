@@ -4,7 +4,8 @@
 //! "why was this not selected" is asked at least as often as the opposite.
 
 use anyhow::Result;
-use reap_core::plan::{explain, PathKind, PlanOptions};
+use reap_core::guard::{evaluate, Decision, Verdict};
+use reap_core::plan::{explain, Candidate, PathExplanation, PathKind, PlanOptions};
 use reap_core::time::{human_bytes, human_duration};
 
 use crate::cli::ExplainArgs;
@@ -27,11 +28,17 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
         ..Default::default()
     };
     let ex = explain(&ctx.config, ctx.os, &path, opts);
+    // Guards run against the candidate the rules produced. When no rule
+    // matched there is nothing to guard, and saying so is the whole answer.
+    let decision = ex.candidate.as_ref().map(|c| evaluate(c, &ctx.guards()));
     let style = Style::detect(ctx.args.no_color, ctx.args.json);
 
     if ctx.args.json {
-        println!("{}", serde_json::to_string_pretty(&to_json(ctx, &ex))?);
-        return Ok(outcome_code(&ex));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&to_json(ctx, &ex, decision.as_ref()))?
+        );
+        return Ok(outcome_code(&ex, decision.as_ref()));
     }
 
     println!("{} {}", style.bold("path:"), ex.path.display());
@@ -75,47 +82,77 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
         );
     }
 
+    let Some(c) = &ex.candidate else {
+        println!();
+        println!(
+            "{}",
+            style.green("Result: no rule names this path, so reap would never touch it.")
+        );
+        return Ok(outcome_code(&ex, None));
+    };
+    let decision = decision.expect("a candidate always gets a decision");
+
     println!();
-    match &ex.candidate {
-        None => {
-            println!(
-                "{}",
-                style.green("Result: no rule selects this path. reap would not touch it.")
-            );
-        }
-        Some(c) => {
-            println!("{}", style.bold("Candidate"));
-            println!("  rule      {}", c.rule);
-            println!("  tier      {} ({})", c.tier, c.tier.description());
-            println!("  size      {}", human_bytes(c.bytes));
-            println!(
-                "  idle      {} (rule requires {})",
-                human_duration(c.idle),
-                human_duration(c.min_idle)
-            );
-            println!();
-            println!(
-                "{}",
-                style.yellow(
-                    "Guards have not run: this build reports rule matching only. \
-                     A matched path is still subject to every guard before removal."
-                )
-            );
-        }
+    print_candidate(&style, c);
+
+    println!();
+    println!("{}", style.bold("Guards"));
+    for result in &decision.results {
+        let (marker, detail) = match &result.verdict {
+            Verdict::Pass(d) => (style.green(" pass   "), d.clone()),
+            Verdict::Reject(d) => (style.red(" FAIL   "), d.clone()),
+            Verdict::Skipped(d) => (style.dim(" skipped"), d.clone()),
+            Verdict::NotReached => (
+                style.dim(" -      "),
+                "not reached; an earlier guard already rejected".to_owned(),
+            ),
+        };
+        println!("  {marker}  {:<18} {}", result.guard, style.dim(&detail));
     }
 
-    Ok(outcome_code(&ex))
-}
-
-fn outcome_code(ex: &reap_core::plan::PathExplanation) -> i32 {
-    if ex.candidate.is_some() {
-        exit::SUCCESS
+    println!();
+    if decision.selected {
+        println!(
+            "{}",
+            style.yellow("Result: every guard passed. This path would be reclaimed by a sweep.")
+        );
     } else {
-        exit::NOTHING_TO_DO
+        println!(
+            "{}",
+            style.green(&format!(
+                "Result: held back by the {} guard. reap would not touch it.",
+                decision.rejected_by.unwrap_or("unknown")
+            ))
+        );
+    }
+
+    Ok(outcome_code(&ex, Some(&decision)))
+}
+
+fn print_candidate(style: &Style, c: &Candidate) {
+    println!("{}", style.bold("Candidate"));
+    println!("  rule      {}", c.rule);
+    println!("  tier      {} ({})", c.tier, c.tier.description());
+    println!("  size      {}", human_bytes(c.bytes));
+    println!(
+        "  idle      {} (rule requires {})",
+        human_duration(c.idle),
+        human_duration(c.min_idle)
+    );
+}
+
+/// Exit 0 when the path would be reclaimed, 3 when it would not.
+///
+/// A scheduler or a script can therefore ask "is this going away?" without
+/// parsing anything.
+fn outcome_code(ex: &PathExplanation, decision: Option<&Decision>) -> i32 {
+    match (ex.candidate.is_some(), decision) {
+        (true, Some(d)) if d.selected => exit::SUCCESS,
+        _ => exit::NOTHING_TO_DO,
     }
 }
 
-fn to_json(ctx: &Context, ex: &reap_core::plan::PathExplanation) -> serde_json::Value {
+fn to_json(ctx: &Context, ex: &PathExplanation, decision: Option<&Decision>) -> serde_json::Value {
     serde_json::json!({
         "schema_version": reap_core::schema::SCHEMA_VERSION,
         "command": "explain",
@@ -137,7 +174,14 @@ fn to_json(ctx: &Context, ex: &reap_core::plan::PathExplanation) -> serde_json::
             "matched": t.outcome.matched(),
             "reason": t.outcome.describe(),
         })).collect::<Vec<_>>(),
-        "selected": ex.candidate.is_some(),
+        "selected": decision.is_some_and(|d| d.selected),
+        "rejected_by": decision.and_then(|d| d.rejected_by),
+        "reason": decision.and_then(|d| d.reason.clone()),
+        "guards": decision.map(|d| d.results.iter().map(|r| serde_json::json!({
+            "guard": r.guard,
+            "verdict": r.verdict.label(),
+            "detail": r.verdict.detail(),
+        })).collect::<Vec<_>>()),
         "candidate": ex.candidate.as_ref().map(|c| serde_json::json!({
             "rule": c.rule,
             "tier": c.tier.get(),

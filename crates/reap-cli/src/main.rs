@@ -8,6 +8,8 @@ mod commands;
 mod context;
 mod exit;
 mod output;
+mod quarantine;
+mod select;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -55,6 +57,7 @@ fn init_tracing(cli: &Cli) {
 fn run(cli: &Cli) -> anyhow::Result<i32> {
     let ctx = Context::load(&cli.global)?;
     match &cli.command {
+        Command::Doctor => commands::doctor::run(&ctx),
         Command::Report(args) => commands::report::run(&ctx, args),
         Command::Explain(args) => commands::explain::run(&ctx, args),
     }

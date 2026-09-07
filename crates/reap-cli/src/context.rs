@@ -5,13 +5,22 @@ use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
 use reap_core::config::{self, Config, LoadContext};
-use reap_platform::Volume;
+use reap_core::guard::{self, GuardContext};
+use reap_core::heartbeat::HeartbeatIndex;
+use reap_platform::{CachedProcessInspector, GitCli, Volume};
 
 use crate::cli::GlobalArgs;
 
 pub struct Context {
     pub config: Config,
     pub volume: Box<dyn Volume>,
+    /// One process inspection per run: on macOS a full sweep costs thousands of
+    /// syscalls, and the liveness guard consults it once per candidate.
+    pub inspector: CachedProcessInspector,
+    pub git: GitCli,
+    pub heartbeats: HeartbeatIndex,
+    /// Declared roots, canonicalized once for the containment check.
+    pub canonical_roots: Vec<PathBuf>,
     pub os: &'static str,
     pub arch: &'static str,
     pub host: String,
@@ -55,7 +64,13 @@ impl Context {
     }
 
     pub fn with_config(config: Config, args: &GlobalArgs) -> Self {
+        let heartbeats = HeartbeatIndex::load(&config.heartbeat_dir);
+        let canonical_roots = guard::canonical_roots(&config);
         Self {
+            heartbeats,
+            canonical_roots,
+            inspector: CachedProcessInspector::new(reap_platform::process_inspector()),
+            git: GitCli,
             config,
             volume: reap_platform::volume(),
             os: reap_platform::os_name(),
@@ -64,6 +79,19 @@ impl Context {
             started_at: SystemTime::now(),
             clock: Instant::now(),
             args: args.clone(),
+        }
+    }
+
+    /// Assembles the context the guard stack runs against.
+    pub fn guards(&self) -> GuardContext<'_> {
+        GuardContext {
+            config: &self.config,
+            now: self.started_at,
+            inspector: &self.inspector,
+            git: &self.git,
+            heartbeats: &self.heartbeats,
+            pid_alive: &reap_platform::process_exists,
+            roots: &self.canonical_roots,
         }
     }
 

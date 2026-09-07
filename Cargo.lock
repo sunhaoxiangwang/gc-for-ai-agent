@@ -692,6 +692,7 @@ dependencies = [
 name = "reap-tests"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "proptest",
  "reap-core",
  "reap-platform",

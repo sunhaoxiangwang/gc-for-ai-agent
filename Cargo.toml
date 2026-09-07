@@ -12,12 +12,21 @@ publish = false
 [dev-dependencies]
 reap-core = { path = "crates/reap-core" }
 reap-platform = { path = "crates/reap-platform" }
+anyhow = "1.0"
 proptest = "1.5"
 tempfile = "3.13"
 
 [workspace]
 resolver = "2"
 members = ["crates/reap-core", "crates/reap-platform", "crates/reap-cli"]
+# Without this, a bare `cargo build` in a workspace whose root is itself a
+# package builds only that root package, which here is the test harness.
+default-members = [
+    ".",
+    "crates/reap-core",
+    "crates/reap-platform",
+    "crates/reap-cli",
+]
 
 [workspace.package]
 version = "0.1.0"

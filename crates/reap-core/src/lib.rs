@@ -14,6 +14,8 @@
 pub mod config;
 pub mod error;
 pub mod fsmeta;
+pub mod guard;
+pub mod heartbeat;
 pub mod plan;
 pub mod schema;
 pub mod time;

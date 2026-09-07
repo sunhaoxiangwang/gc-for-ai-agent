@@ -71,3 +71,78 @@ pub fn human_duration(d: Duration) -> String {
         _ => format!("{}d", s / 86_400),
     }
 }
+
+/// Parses an RFC 3339 timestamp of the shape [`rfc3339`] produces, plus the
+/// common variants a supervisor is likely to write: a numeric offset instead of
+/// `Z`, and fractional seconds.
+///
+/// Returns `None` for anything it does not fully understand, and every caller
+/// treats that as "no usable timestamp" rather than guessing.
+pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
+    let s = s.trim();
+    let bytes = s.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    if !matches!(bytes[10], b'T' | b't' | b' ') || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let year: i64 = s[0..4].parse().ok()?;
+    let month: u32 = s[5..7].parse().ok()?;
+    let day: u32 = s[8..10].parse().ok()?;
+    let hour: u64 = s[11..13].parse().ok()?;
+    let minute: u64 = s[14..16].parse().ok()?;
+    let second: u64 = s[17..19].parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let mut rest = &s[19..];
+    // Fractional seconds are accepted and discarded: this program's decisions
+    // are never that fine-grained.
+    if let Some(stripped) = rest.strip_prefix('.') {
+        let digits = stripped.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        rest = &stripped[digits..];
+    }
+
+    let offset_seconds: i64 = match rest.as_bytes().first() {
+        Some(b'Z' | b'z') if rest.len() == 1 => 0,
+        Some(sign @ (b'+' | b'-')) if rest.len() == 6 && rest.as_bytes()[3] == b':' => {
+            let h: i64 = rest[1..3].parse().ok()?;
+            let m: i64 = rest[4..6].parse().ok()?;
+            let magnitude = h * 3600 + m * 60;
+            if *sign == b'+' {
+                magnitude
+            } else {
+                -magnitude
+            }
+        }
+        // A timestamp with no zone is ambiguous. Refusing it is safer than
+        // assuming a zone and getting the age of a heartbeat wrong by hours.
+        _ => return None,
+    };
+
+    let days = days_from_civil(year, month, day);
+    let utc = days * 86_400 + (hour * 3600 + minute * 60 + second) as i64 - offset_seconds;
+    if utc < 0 {
+        return None;
+    }
+    Some(UNIX_EPOCH + Duration::from_secs(utc as u64))
+}
+
+/// Inverse of [`civil_from_days`].
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}

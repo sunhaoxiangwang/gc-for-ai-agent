@@ -46,6 +46,9 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Validate the configuration and the environment, and explain what is wrong.
+    Doctor,
+
     /// Show what could be reclaimed, largest first. Deletes nothing.
     Report(ReportArgs),
 

@@ -14,7 +14,9 @@ mod linux;
 mod macos;
 
 mod cache;
+mod git;
 pub use cache::CachedProcessInspector;
+pub use git::{GitCli, GitOracle, IgnoreStatus};
 
 /// Free-space accounting for one mounted filesystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +94,28 @@ pub fn volume() -> Box<dyn Volume> {
     #[cfg(target_os = "macos")]
     {
         Box::new(macos::MacVolume)
+    }
+}
+
+/// Whether a process with this id currently exists.
+///
+/// Used as a backstop behind the heartbeat contract: a supervisor that died
+/// without removing its heartbeat leaves a stale file, but if the process it
+/// described is still running the workspace is still live.
+pub fn process_exists(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 performs the permission and existence checks without sending
+    // anything. EPERM means the process exists but belongs to someone else,
+    // which for our purposes is still "exists".
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::EPERM) => true,
+        Err(_) => false,
     }
 }
 

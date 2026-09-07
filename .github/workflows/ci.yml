@@ -33,9 +33,9 @@ jobs:
       matrix:
         include:
           - name: macOS aarch64
-            os: macos-14
+            os: macos-15
           - name: macOS x86_64
-            os: macos-13
+            os: macos-15-intel
           - name: Linux x86_64
             os: ubuntu-latest
           - name: Linux aarch64

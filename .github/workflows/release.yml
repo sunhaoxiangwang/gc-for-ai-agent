@@ -24,9 +24,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
           # Both Linux targets are cross-compiled from one x86_64 runner with
           # cargo-zigbuild. musl gives a static binary with no glibc version
           # coupling, so one artifact works on any distribution.

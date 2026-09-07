@@ -286,15 +286,21 @@ fn explain_on_an_unrelated_path_says_no_rule_names_it() {
 fn doctor_passes_on_a_healthy_configuration() {
     let t = Tree::new();
     let out = t.reap().arg("doctor").output().unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(SUCCESS),
-        "doctor failed:\n{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
     let text = String::from_utf8_lossy(&out.stdout);
+
+    // Exit 0 is the contract: no check failed. Warnings do not fail a run.
+    assert_eq!(out.status.code(), Some(SUCCESS), "doctor failed:\n{text}");
+    assert!(!text.contains("failure:"), "{text}");
+
+    // The checks that matter structurally must have run and passed.
     assert!(text.contains("rename from"), "{text}");
-    assert!(text.contains("Everything checks out"), "{text}");
+    assert!(text.contains("ok   tier 0 cargo-target"), "{text}");
+
+    // Deliberately not asserted: "Everything checks out", which appears only
+    // when there are no warnings at all. That depends on the machine rather
+    // than on the code. A CI runner with 11.8% free disk warns about being
+    // below the low-water mark, which is doctor working correctly, and this
+    // test used to fail there while passing on a roomier laptop.
 }
 
 #[test]
@@ -1138,4 +1144,39 @@ fn invariant_1_an_armed_sweep_removes_nothing_no_rule_names() {
             "{shape} was removed, but no rule named it"
         );
     }
+}
+
+/// A machine below its own low-water mark is a warning, not a failure.
+///
+/// This is the case a CI runner with a nearly full disk hits, and the
+/// distinction matters: a scheduled `doctor` on a busy build machine should
+/// report low disk without exiting non-zero, because low disk is the situation
+/// reap exists to handle rather than a misconfiguration.
+#[test]
+fn doctor_warns_but_does_not_fail_when_free_space_is_below_the_low_water_mark() {
+    let t = Tree::new();
+    // No machine running this test has 99% of its disk free.
+    let text = std::fs::read_to_string(&t.config).unwrap();
+    std::fs::write(
+        &t.config,
+        text.replace(
+            "dry_run = true",
+            "dry_run = true\nlow_water_pct = 99\ntarget_free_pct = 100",
+        ),
+    )
+    .unwrap();
+
+    let out = t.reap().arg("doctor").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    assert_eq!(
+        out.status.code(),
+        Some(SUCCESS),
+        "low disk should warn, not fail:\n{text}"
+    );
+    assert!(
+        text.contains("below the low-water mark"),
+        "the warning should say what is wrong: {text}"
+    );
+    assert!(!text.contains("failure:"), "{text}");
 }

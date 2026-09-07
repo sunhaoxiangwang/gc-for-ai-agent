@@ -74,6 +74,7 @@ for config in "$REPO_ROOT"/examples/*.toml; do
         continue
     fi
     echo "FAILED (exit $code)"
+    # shellcheck disable=SC2001  # ${var//x/y} cannot anchor a per-line prefix
     echo "$output" | sed 's/^/    /'
     status=1
 done

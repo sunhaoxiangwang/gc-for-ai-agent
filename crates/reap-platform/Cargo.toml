@@ -1,0 +1,20 @@
+[package]
+name = "reap-platform"
+description = "Platform abstraction (process inspection, volume statistics) for the reap disk reclaimer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+nix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14"
+
+[dev-dependencies]
+tempfile.workspace = true

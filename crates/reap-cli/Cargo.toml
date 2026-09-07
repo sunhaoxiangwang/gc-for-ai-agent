@@ -1,0 +1,33 @@
+[package]
+name = "reap-cli"
+description = "reap: a guarded, declarative, dry-run-first reclaimer for build artifacts and tool caches."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["cleanup", "disk", "cache", "build", "gc"]
+categories = ["command-line-utilities", "filesystem"]
+
+[[bin]]
+name = "reap"
+path = "src/main.rs"
+
+[dependencies]
+reap-core = { path = "../reap-core", version = "0.1.0" }
+reap-platform = { path = "../reap-platform", version = "0.1.0" }
+anyhow.workspace = true
+clap.workspace = true
+hostname.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+proptest.workspace = true

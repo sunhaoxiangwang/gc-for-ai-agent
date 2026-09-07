@@ -46,6 +46,9 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Write a starter configuration for this machine.
+    Init(InitArgs),
+
     /// Validate the configuration and the environment, and explain what is wrong.
     Doctor,
 
@@ -101,6 +104,21 @@ pub struct SweepArgs {
     /// neither opt-in is sufficient on its own.
     #[arg(long)]
     pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Include only the rules for toolchains actually installed here.
+    #[arg(long)]
+    pub detect: bool,
+
+    /// Print the configuration instead of writing it.
+    #[arg(long)]
+    pub print: bool,
+
+    /// Overwrite an existing configuration file.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Debug, Args)]

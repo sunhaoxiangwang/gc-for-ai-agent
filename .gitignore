@@ -1,0 +1,12 @@
+# Rust build output.
+/target
+**/*.rs.bk
+
+# The quarantine and heartbeat directories, if anyone points a local config
+# at the repository while testing.
+/quarantine
+/heartbeats
+
+# Editor and OS noise.
+.DS_Store
+*.swp

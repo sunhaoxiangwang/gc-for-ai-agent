@@ -7,6 +7,7 @@
 // `reap-platform`. `unsafe` belongs in exactly one module of one crate.
 #![forbid(unsafe_code)]
 
+mod catalog;
 mod cli;
 mod commands;
 mod context;
@@ -67,8 +68,15 @@ fn init_tracing(cli: &Cli) {
 }
 
 fn run(cli: &Cli) -> anyhow::Result<i32> {
+    // `init` is the one command that runs without a configuration, because its
+    // job is to produce one.
+    if let Command::Init(args) = &cli.command {
+        return commands::init::run(args, &cli.global);
+    }
+
     let ctx = Context::load(&cli.global)?;
     match &cli.command {
+        Command::Init(_) => unreachable!("handled above"),
         Command::Doctor => commands::doctor::run(&ctx),
         Command::Report(args) => commands::report::run(&ctx, args),
         Command::Explain(args) => commands::explain::run(&ctx, args),

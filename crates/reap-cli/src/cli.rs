@@ -54,6 +54,13 @@ pub enum Command {
 
     /// Explain why one path would or would not be reclaimed, guard by guard.
     Explain(ExplainArgs),
+
+    /// Reclaim what the rules select and the guards permit.
+    Sweep(SweepArgs),
+
+    /// Reclaim one supervised session's leftovers. Safe on an unknown id and
+    /// safe to call twice.
+    GcSession(GcSessionArgs),
 }
 
 #[derive(Debug, Args)]
@@ -66,6 +73,28 @@ pub struct ReportArgs {
     /// Include candidates that were rejected by a guard.
     #[arg(long)]
     pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SweepArgs {
+    /// Highest tier to reclaim. A plain sweep touches tier 0 only.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub tier: u8,
+
+    /// Actually remove things. Requires dry_run = false in the config as well;
+    /// neither opt-in is sufficient on its own.
+    #[arg(long)]
+    pub apply: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GcSessionArgs {
+    /// The session id, as used in the heartbeat file name.
+    pub id: String,
+
+    /// Actually remove things. Requires dry_run = false in the config as well.
+    #[arg(long)]
+    pub apply: bool,
 }
 
 #[derive(Debug, Args)]

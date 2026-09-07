@@ -15,6 +15,7 @@ use serde_json::Value;
 const SUCCESS: i32 = 0;
 const CONFIG: i32 = 2;
 const NOTHING_TO_DO: i32 = 3;
+const PARTIAL: i32 = 4;
 
 struct Tree {
     dir: tempfile::TempDir,
@@ -69,6 +70,22 @@ min_idle = "0s"
         .unwrap();
 
         Self { dir, base, config }
+    }
+
+    /// Rewrites the config with `dry_run = false`, the second of the two
+    /// opt-ins. Tests that mutate call this explicitly, so a test that forgot
+    /// to could not remove anything by accident.
+    fn arm(&self) {
+        let text = std::fs::read_to_string(&self.config).unwrap();
+        std::fs::write(
+            &self.config,
+            text.replace("dry_run = true", "dry_run = false"),
+        )
+        .unwrap();
+    }
+
+    fn quarantine(&self) -> PathBuf {
+        self.base.join("quarantine")
     }
 
     fn reap(&self) -> Command {
@@ -363,4 +380,363 @@ fn snapshot(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+// ---------------------------------------------------------------------------
+// Invariant 4: dry run is the default, and mutation needs both opt-ins.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn invariant_4_sweep_without_apply_removes_nothing() {
+    let t = Tree::new();
+    t.arm(); // the config says removal is allowed...
+    let out = t.reap().arg("sweep").output().unwrap();
+
+    // ...but --apply was not given, so nothing happens.
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(
+        t.target().exists(),
+        "sweep removed something without --apply"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Nothing was removed"), "{text}");
+}
+
+#[test]
+fn invariant_4_apply_against_a_dry_run_config_removes_nothing_and_exits_2() {
+    let t = Tree::new();
+    // --apply is given, but the config was never armed.
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(CONFIG),
+        "a config still set to dry_run must be visible in the exit code"
+    );
+    assert!(
+        t.target().exists(),
+        "one opt-in was enough to remove something"
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("still has dry_run = true"), "{text}");
+}
+
+#[test]
+fn invariant_4_both_opt_ins_together_reclaim_and_leave_the_source_alone() {
+    let t = Tree::new();
+    t.arm();
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(!t.target().exists(), "the build directory should be gone");
+    assert!(
+        t.path("code/proj/Cargo.toml").exists(),
+        "source was removed"
+    );
+    assert!(
+        t.path("code/proj/.git").exists(),
+        "the repository was removed"
+    );
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Reclaimed"), "{text}");
+    assert!(text.contains("across 1 directories"), "{text}");
+}
+
+/// Invariant 9: every mutation is logged with path, bytes, rule and tier,
+/// before it happens.
+#[test]
+fn invariant_9_each_removal_is_logged_with_its_path_bytes_rule_and_tier() {
+    let t = Tree::new();
+    t.arm();
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        log.contains("reclaiming"),
+        "no intent line was logged: {log}"
+    );
+    assert!(log.contains("rule=cargo-target"), "{log}");
+    assert!(log.contains("tier=0"), "{log}");
+    assert!(log.contains("bytes="), "{log}");
+    assert!(log.contains("target"), "{log}");
+}
+
+#[test]
+fn a_sweep_defaults_to_tier_0_only() {
+    let t = Tree::new();
+    let text = std::fs::read_to_string(&t.config).unwrap();
+    std::fs::write(
+        &t.config,
+        text + "\n[[rule]]\nname = \"node-modules\"\nkind = \"path\"\ntier = 1\ndir_name = \"node_modules\"\nmin_idle = \"0s\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(t.path("code/proj/node_modules")).unwrap();
+    std::fs::write(t.path("code/proj/node_modules/x"), vec![b'x'; 1000]).unwrap();
+    // The repository must ignore it, or the git guard would be what stops it
+    // and this test would pass for the wrong reason.
+    std::fs::write(
+        t.path("code/proj/.gitignore"),
+        b"/target/\n/node_modules/\n",
+    )
+    .unwrap();
+    t.arm();
+
+    t.reap().args(["sweep", "--apply"]).output().unwrap();
+    assert!(!t.target().exists(), "tier 0 should have been reclaimed");
+    assert!(
+        t.path("code/proj/node_modules").exists(),
+        "a plain sweep reached tier 1"
+    );
+
+    t.reap()
+        .args(["sweep", "--tier", "1", "--apply"])
+        .output()
+        .unwrap();
+    assert!(!t.path("code/proj/node_modules").exists());
+}
+
+/// Invariant 7: an interrupted run leaves orphaned quarantine entries that the
+/// next run clears, exercised through the real binary.
+#[test]
+fn invariant_7_the_next_run_clears_what_an_interrupted_one_left_staged() {
+    let t = Tree::new();
+    t.arm();
+
+    // The state a kill between rename and removal leaves behind.
+    let orphan = t.quarantine().join("staged-orphan");
+    std::fs::create_dir_all(orphan.join("deep")).unwrap();
+    std::fs::write(orphan.join("deep/blob"), vec![b'x'; 5000]).unwrap();
+    std::fs::write(
+        t.quarantine().join("manifest.jsonl"),
+        "{\"staged_at\":\"2026-01-01T00:00:00Z\",\"entry\":\"staged-orphan\",\"original_path\":\"/gone/target\",\"rule\":\"cargo-target\",\"tier\":0,\"bytes\":5000}\n",
+    )
+    .unwrap();
+
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(!orphan.exists(), "the orphaned entry survived");
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("interrupted run"), "{text}");
+    assert!(
+        text.contains("/gone/target"),
+        "the note should name where the orphan came from: {text}"
+    );
+
+    // Quarantine holds nothing but an empty manifest afterwards.
+    let left: Vec<String> = std::fs::read_dir(t.quarantine())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec!["manifest.jsonl".to_owned()]);
+    assert_eq!(
+        std::fs::read_to_string(t.quarantine().join("manifest.jsonl")).unwrap(),
+        ""
+    );
+}
+
+/// A pin marker stops a sweep that is otherwise fully armed. This is the
+/// property the README tells users to rely on.
+#[test]
+fn a_pin_marker_stops_an_armed_sweep() {
+    let t = Tree::new();
+    t.arm();
+    std::fs::write(t.path("code/proj/.reap-keep"), b"").unwrap();
+
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(NOTHING_TO_DO));
+    assert!(t.target().exists(), "a pinned directory was removed");
+}
+
+/// Invariant 5, end to end: a build directory the repository does not ignore
+/// survives an armed sweep.
+#[test]
+fn invariant_5_a_directory_git_does_not_ignore_survives_an_armed_sweep() {
+    let t = Tree::new();
+    std::fs::write(t.path("code/proj/.gitignore"), b"# nothing ignored\n").unwrap();
+    t.arm();
+
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(NOTHING_TO_DO));
+    assert!(t.target().exists(), "tracked work was removed");
+}
+
+// ---------------------------------------------------------------------------
+// gc-session
+// ---------------------------------------------------------------------------
+
+#[test]
+fn gc_session_is_safe_on_an_id_that_never_existed() {
+    let t = Tree::new();
+    t.arm();
+    let out = t
+        .reap()
+        .args(["gc-session", "no-such-session", "--apply"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(NOTHING_TO_DO));
+    assert!(
+        t.target().exists(),
+        "gc-session touched an unrelated project"
+    );
+}
+
+#[test]
+fn gc_session_reclaims_only_its_own_session_and_is_safe_to_call_twice() {
+    let t = Tree::new();
+    let sess = t.path("code/job-42");
+    std::fs::create_dir_all(sess.join("target")).unwrap();
+    std::fs::write(sess.join("Cargo.toml"), b"[package]\nname=\"y\"\n").unwrap();
+    std::fs::write(sess.join(".gitignore"), b"/target/\n").unwrap();
+    std::fs::write(sess.join("target/blob"), vec![b'x'; 3000]).unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&sess)
+        .status()
+        .unwrap()
+        .success());
+    t.arm();
+
+    let out = t
+        .reap()
+        .args(["gc-session", "job-42", "--apply"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(
+        !sess.join("target").exists(),
+        "the session's build dir survived"
+    );
+    assert!(
+        t.target().exists(),
+        "gc-session reached outside its session"
+    );
+
+    // Calling it again is a no-op, which is what makes it safe on a crash path
+    // where nobody knows what already ran.
+    let again = t
+        .reap()
+        .args(["gc-session", "job-42", "--apply"])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(NOTHING_TO_DO));
+}
+
+#[test]
+fn gc_session_refuses_an_id_that_could_be_read_as_a_path() {
+    let t = Tree::new();
+    t.arm();
+    for id in ["../../etc", "a/b", "."] {
+        let out = t
+            .reap()
+            .args(["gc-session", id, "--apply"])
+            .output()
+            .unwrap();
+        assert_ne!(out.status.code(), Some(SUCCESS), "id {id:?} was accepted");
+        assert!(t.target().exists());
+    }
+}
+
+#[test]
+fn gc_session_does_not_run_machine_wide_command_reclaimers() {
+    let t = Tree::new();
+    // A command rule that leaves a trace if it runs.
+    let marker = t.path("command-ran");
+    let text = std::fs::read_to_string(&t.config).unwrap();
+    std::fs::write(
+        &t.config,
+        format!(
+            "{text}\n[[rule]]\nname = \"touch-marker\"\nkind = \"command\"\ntier = 0\ncommand = [\"/usr/bin/touch\", \"{}\"]\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    t.arm();
+
+    let sess = t.path("code/job-9");
+    std::fs::create_dir_all(sess.join("target")).unwrap();
+    std::fs::write(sess.join("Cargo.toml"), b"[package]\nname=\"y\"\n").unwrap();
+    std::fs::write(sess.join("target/blob"), vec![b'x'; 100]).unwrap();
+
+    t.reap()
+        .args(["gc-session", "job-9", "--apply"])
+        .output()
+        .unwrap();
+    assert!(
+        !marker.exists(),
+        "gc-session ran a machine-wide command reclaimer"
+    );
+
+    // A full sweep does run it.
+    t.reap().args(["sweep", "--apply"]).output().unwrap();
+    assert!(marker.exists(), "sweep did not run the command rule");
+}
+
+/// A quarantine directory that cannot receive a rename aborts the sweep.
+///
+/// The point of the check is that there is no fallback: removing in place when
+/// the rename fails would trade the entire interruption guarantee for the
+/// convenience of not stopping. On a real machine the usual cause is a
+/// quarantine directory on a different filesystem, which fails with `EXDEV`;
+/// here an unwritable directory drives the same path.
+#[test]
+fn a_quarantine_that_cannot_receive_a_rename_aborts_rather_than_falling_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let t = Tree::new();
+    t.arm();
+    std::fs::create_dir_all(t.quarantine()).unwrap();
+    let mut perms = std::fs::metadata(t.quarantine()).unwrap().permissions();
+    perms.set_mode(0o500); // readable and traversable, but not writable
+    std::fs::set_permissions(t.quarantine(), perms).unwrap();
+
+    let out = t.reap().args(["sweep", "--apply"]).output().unwrap();
+
+    let mut perms = std::fs::metadata(t.quarantine()).unwrap().permissions();
+    perms.set_mode(0o755);
+    let _ = std::fs::set_permissions(t.quarantine(), perms);
+
+    assert_ne!(
+        out.status.code(),
+        Some(SUCCESS),
+        "the sweep reported success"
+    );
+    assert!(
+        t.target().exists(),
+        "the sweep fell back to removing in place"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("refusing to sweep"),
+        "the failure should say why: {err}"
+    );
+    assert!(
+        err.contains("quarantine"),
+        "the failure should name the directory at fault: {err}"
+    );
+}
+
+/// The same fault, seen by `doctor`, which is where a user is told about it
+/// before a sweep ever runs.
+#[test]
+fn doctor_reports_a_quarantine_that_cannot_receive_a_rename() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let t = Tree::new();
+    std::fs::create_dir_all(t.quarantine()).unwrap();
+    let mut perms = std::fs::metadata(t.quarantine()).unwrap().permissions();
+    perms.set_mode(0o500);
+    std::fs::set_permissions(t.quarantine(), perms).unwrap();
+
+    let out = t.reap().arg("doctor").output().unwrap();
+
+    let mut perms = std::fs::metadata(t.quarantine()).unwrap().permissions();
+    perms.set_mode(0o755);
+    let _ = std::fs::set_permissions(t.quarantine(), perms);
+
+    assert_eq!(out.status.code(), Some(PARTIAL));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("failure:"), "{text}");
 }

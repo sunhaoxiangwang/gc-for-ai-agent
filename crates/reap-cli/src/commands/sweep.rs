@@ -399,7 +399,7 @@ fn print_human(ctx: &Context, style: &Style, report: &RunReport, gate: &Gate, ti
                 "{}",
                 style.yellow(&format!(
                     "Nothing was removed: --apply was given, but {} still has dry_run = true.",
-                    ctx.config.source.display()
+                    tilde(&ctx.config.source, home.as_deref())
                 ))
             );
             println!(

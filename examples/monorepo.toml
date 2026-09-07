@@ -1,0 +1,103 @@
+# reap: a large monorepo
+#
+# One repository, many packages, many languages, and a build system that
+# scatters output through the tree. The problem here is not finding artifacts;
+# it is walking a very large tree quickly and not touching anything the build
+# system still needs.
+#
+# Expect: a monorepo that has been built a few different ways commonly carries
+# 20-60 GB of per-package output.
+#
+# Try it:
+#     reap --config examples/monorepo.toml report
+#
+# Two things make this config different from the single-language ones:
+#
+#   * Depth caps are tight. A monorepo is wide, and an unbounded walk of it is
+#     slow enough to matter. Rules that only ever match near the top say so.
+#   * The whole repository is one git work tree, so the git-ignore guard is
+#     doing most of the work: if your .gitignore is accurate, reap cannot
+#     touch anything you wrote.
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 20
+target_free_pct = 30
+
+# A wide tree takes longer to walk. Give it room, but still bounded: a
+# reclaimer that pegs the disk for ten minutes is a bug.
+max_run_seconds = 600
+
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+
+# Output directories a shared build cache still refers to. Adjust to your
+# build system's layout.
+deny = ["~/code/monorepo/.build-cache"]
+
+[[root]]
+path = "~/code/monorepo"
+# packages/<team>/<package>/<artifact-dir> is four levels; allow one more.
+max_depth = 5
+
+# --- tier 0: near-free to regenerate ---------------------------------------
+
+[[rule]]
+name = "python-bytecode"
+kind = "path"
+tier = 0
+dir_name = "__pycache__"
+min_idle = "1h"
+
+[[rule]]
+name = "python-tool-caches"
+kind = "path"
+tier = 0
+glob = "**/.{pytest,mypy,ruff}_cache"
+min_idle = "24h"
+
+# Per-package Rust output. In a monorepo these are usually shallow, so a
+# tighter cap than the root's makes the walk cheaper.
+[[rule]]
+name = "cargo-target"
+kind = "path"
+tier = 0
+dir_name = "target"
+require_sibling = "Cargo.toml"
+min_idle = "48h"
+max_depth = 4
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+[[rule]]
+name = "node-modules"
+kind = "path"
+tier = 1
+dir_name = "node_modules"
+require_sibling = "package.json"
+min_idle = "14d"
+
+# Per-package build output. `require_ancestor` restricts this to the packages
+# tree, so a "dist" directory elsewhere in the repository is out of scope even
+# before the guards run.
+[[rule]]
+name = "package-build-output"
+kind = "path"
+tier = 1
+glob = "**/{dist,build,.turbo}"
+require_ancestor = "packages"
+min_idle = "14d"
+
+# --- tier 2: shared caches --------------------------------------------------
+
+[[rule]]
+name = "gradle-caches"
+kind = "path"
+tier = 2
+glob = "~/.gradle/caches/*"
+min_idle = "60d"
+
+[[root]]
+path = "~/.gradle/caches"
+max_depth = 1

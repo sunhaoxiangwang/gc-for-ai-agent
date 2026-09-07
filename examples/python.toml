@@ -1,0 +1,78 @@
+# reap: Python
+#
+# Reclaims bytecode, tool caches, virtual environments and, at tier 2, the
+# wheel caches.
+#
+# Expect: __pycache__ and tool caches are small individually and add up to a
+# few hundred megabytes. Virtual environments are the real weight: 200 MB to
+# several GB each once anything scientific is installed.
+#
+# Try it:
+#     reap --config examples/python.toml report
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 15
+target_free_pct = 25
+max_run_seconds = 300
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+deny = []
+
+[[root]]
+path = "~/code"
+max_depth = 6
+
+# --- tier 0: near-free to regenerate ---------------------------------------
+
+[[rule]]
+name = "python-bytecode"
+kind = "path"
+tier = 0
+dir_name = "__pycache__"
+min_idle = "1h"
+
+[[rule]]
+name = "python-tool-caches"
+kind = "path"
+tier = 0
+glob = "**/.{pytest,mypy,ruff}_cache"
+min_idle = "24h"
+
+[[rule]]
+name = "coverage-output"
+kind = "path"
+tier = 0
+glob = "**/htmlcov"
+min_idle = "24h"
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+# `require_ancestor` keeps this to environments that belong to a repository. A
+# long-lived environment you keep somewhere else, outside a checkout, is not
+# swept up by this rule.
+#
+# If you keep a virtual environment you never want touched, put a .reap-keep
+# file next to it and stop thinking about it.
+[[rule]]
+name = "python-venv"
+kind = "path"
+tier = 1
+glob = "**/{.venv,venv}"
+require_ancestor = ".git"
+min_idle = "30d"
+
+# --- tier 2: shared caches --------------------------------------------------
+
+[[rule]]
+name = "uv-cache"
+kind = "command"
+tier = 2
+command = ["uv", "cache", "prune"]
+
+# Prevention: point pip and uv at one cache each rather than letting tools
+# scatter them.
+#
+#     export PIP_CACHE_DIR="$HOME/.cache/pip"
+#     export UV_CACHE_DIR="$HOME/.cache/uv"

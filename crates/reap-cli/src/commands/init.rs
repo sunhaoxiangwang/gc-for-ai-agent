@@ -17,11 +17,20 @@ use crate::catalog::{self, Stack};
 use crate::cli::InitArgs;
 use crate::context::{home, load_context};
 use crate::exit;
-use crate::output::Style;
+use crate::output::{tilde, Style};
 
 /// Directory names people keep code in, in the order we would rather find them.
 const CONVENTIONAL_CODE_DIRS: &[&str] = &[
-    "code", "src", "dev", "Developer", "projects", "Projects", "repos", "work", "git", "workspace",
+    "code",
+    "src",
+    "dev",
+    "Developer",
+    "projects",
+    "Projects",
+    "repos",
+    "work",
+    "git",
+    "workspace",
 ];
 
 /// Parts of a home directory that are never code, and are skipped when looking
@@ -343,7 +352,7 @@ pub fn run(args: &InitArgs, global: &crate::cli::GlobalArgs) -> Result<i32> {
     std::fs::write(&target, &text)
         .with_context(|| format!("could not write {}", target.display()))?;
 
-    println!("wrote {}", target.display());
+    println!("wrote {}", tilde(&target, Some(&home)));
     println!();
     if args.detect {
         println!("{}", style.bold("Detected on this machine"));
@@ -360,7 +369,7 @@ pub fn run(args: &InitArgs, global: &crate::cli::GlobalArgs) -> Result<i32> {
         );
     }
     for root in &roots {
-        println!("  {}", root.display());
+        println!("  {}", tilde(root, Some(&home)));
     }
 
     println!();

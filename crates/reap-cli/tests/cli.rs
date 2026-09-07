@@ -915,3 +915,185 @@ fn tier_and_until_free_are_mutually_exclusive() {
     assert_ne!(out.status.code(), Some(SUCCESS));
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be used with"));
 }
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+
+/// What `init` writes must load, and must be safe: dry run on, and no rule that
+/// could not have come from the catalogue.
+#[test]
+fn init_writes_a_config_that_loads_and_is_dry_by_default() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(fake_home.join("code/proj")).unwrap();
+    std::fs::write(fake_home.join("code/proj/Cargo.toml"), b"").unwrap();
+
+    let target = fake_home.join(".config/reap/reap.toml");
+    let out = Command::cargo_bin("reap")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env_remove("REAP_CONFIG")
+        .env("NO_COLOR", "1")
+        .args(["--config"])
+        .arg(&target)
+        .args(["init", "--detect"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(text.contains("dry_run = true"), "init armed the config");
+    assert!(text.contains("[[root]]"), "no roots were written");
+    assert!(text.contains("[[rule]]"), "no rules were written");
+
+    // The written file must actually load, which is the whole point.
+    let out = Command::cargo_bin("reap")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env("NO_COLOR", "1")
+        .arg("--config")
+        .arg(&target)
+        .args(["report", "--json"])
+        .output()
+        .unwrap();
+    assert_ne!(
+        out.status.code(),
+        Some(CONFIG),
+        "the generated config did not load: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `init` refuses to clobber a config someone has edited.
+#[test]
+fn init_will_not_overwrite_without_force() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    let target = fake_home.join(".config/reap/reap.toml");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, b"# hand written, do not lose\n").unwrap();
+
+    let reap = || {
+        let mut c = Command::cargo_bin("reap").unwrap();
+        c.env("HOME", &fake_home)
+            .env_remove("REAP_CONFIG")
+            .env("NO_COLOR", "1")
+            .arg("--config")
+            .arg(&target);
+        c
+    };
+
+    let out = reap().args(["init", "--detect"]).output().unwrap();
+    assert_ne!(out.status.code(), Some(SUCCESS));
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "# hand written, do not lose\n"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--force"));
+
+    let out = reap()
+        .args(["init", "--detect", "--force"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(std::fs::read_to_string(&target)
+        .unwrap()
+        .contains("[global]"));
+}
+
+/// `--print` writes nothing at all.
+#[test]
+fn init_print_writes_nothing() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = Command::cargo_bin("reap")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env_remove("REAP_CONFIG")
+        .env("NO_COLOR", "1")
+        .args(["init", "--detect", "--print"])
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(SUCCESS));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("[global]"));
+    assert!(
+        !fake_home.join(".config").exists(),
+        "--print created a file"
+    );
+}
+
+/// Without `--detect`, the whole catalogue is written, so a reader deletes what
+/// does not apply rather than hunting for what does.
+#[test]
+fn init_without_detect_writes_the_whole_catalogue() {
+    let t = Tree::new();
+    let fake_home = t.path("fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+
+    let out = Command::cargo_bin("reap")
+        .unwrap()
+        .env("HOME", &fake_home)
+        .env_remove("REAP_CONFIG")
+        .env("NO_COLOR", "1")
+        .args(["init", "--print"])
+        .output()
+        .unwrap();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    for rule in [
+        "cargo-target",
+        "node-modules",
+        "python-venv",
+        "docker-build-cache",
+    ] {
+        assert!(
+            text.contains(rule),
+            "{rule} missing from the full catalogue"
+        );
+    }
+}
+
+/// Every shipped example must load and survive a report. This duplicates
+/// `scripts/validate-examples.sh` at a level that runs on every `cargo test`.
+#[test]
+fn every_shipped_example_loads() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let examples = root.join("examples");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&examples).unwrap().flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        checked += 1;
+        let out = Command::cargo_bin("reap")
+            .unwrap()
+            .env("NO_COLOR", "1")
+            .env_remove("REAP_CONFIG")
+            .arg("--config")
+            .arg(&path)
+            .args(["report", "--json"])
+            .output()
+            .unwrap();
+        let code = out.status.code();
+        assert!(
+            code != Some(CONFIG) && code != Some(1),
+            "{} did not load: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(
+        checked >= 7,
+        "expected the shipped examples, found {checked}"
+    );
+}

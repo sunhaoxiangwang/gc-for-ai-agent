@@ -9,9 +9,9 @@ use reap_core::plan::{explain, Candidate, PathExplanation, PathKind, PlanOptions
 use reap_core::time::{human_bytes, human_duration};
 
 use crate::cli::ExplainArgs;
-use crate::context::Context;
+use crate::context::{home, Context};
 use crate::exit;
-use crate::output::Style;
+use crate::output::{tilde, Shortener, Style};
 
 pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
     // Report on the path the user typed, resolved against the working
@@ -41,7 +41,13 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
         return Ok(outcome_code(&ex, decision.as_ref()));
     }
 
-    println!("{} {}", style.bold("path:"), ex.path.display());
+    let home = home();
+    let short = Shortener::new(home.as_deref());
+    println!(
+        "{} {}",
+        style.bold("path:"),
+        tilde(&ex.path, home.as_deref())
+    );
     match &ex.kind {
         PathKind::Directory => {}
         PathKind::Symlink => println!(
@@ -57,7 +63,11 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
 
     match (&ex.root, ex.depth) {
         (Some(root), Some(depth)) => {
-            println!("{} {} (depth {depth})", style.bold("root:"), root.display())
+            println!(
+                "{} {} (depth {depth})",
+                style.bold("root:"),
+                tilde(root, home.as_deref())
+            )
         }
         _ => println!(
             "{} {}",
@@ -78,7 +88,7 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
             "  {marker}  tier {}  {:<28} {}",
             trace.tier,
             trace.rule,
-            style.dim(&trace.outcome.describe())
+            style.dim(&short.apply(&trace.outcome.describe()))
         );
     }
 
@@ -99,9 +109,9 @@ pub fn run(ctx: &Context, args: &ExplainArgs) -> Result<i32> {
     println!("{}", style.bold("Guards"));
     for result in &decision.results {
         let (marker, detail) = match &result.verdict {
-            Verdict::Pass(d) => (style.green(" pass   "), d.clone()),
-            Verdict::Reject(d) => (style.red(" FAIL   "), d.clone()),
-            Verdict::Skipped(d) => (style.dim(" skipped"), d.clone()),
+            Verdict::Pass(d) => (style.green(" pass   "), short.apply(d)),
+            Verdict::Reject(d) => (style.red(" FAIL   "), short.apply(d)),
+            Verdict::Skipped(d) => (style.dim(" skipped"), short.apply(d)),
             Verdict::NotReached => (
                 style.dim(" -      "),
                 "not reached; an earlier guard already rejected".to_owned(),

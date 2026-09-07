@@ -7,7 +7,7 @@
 //!
 //! The same rules, hand-arranged and expanded, are what `examples/` contains.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A toolchain whose presence justifies a set of rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,12 +242,11 @@ pub const CATALOG: &[Entry] = &[
 ];
 
 /// Whether an executable of this name is on `PATH`.
-pub fn on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        let candidate = dir.join(program);
-        candidate.is_file().then_some(candidate)
-    })
+pub fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
 }
 
 /// What was found on this machine, and the evidence for it.
@@ -278,7 +277,11 @@ pub fn detect(home: &Path) -> Vec<Found> {
             &["Library/pnpm", ".local/share/pnpm"][..],
         ),
         (Stack::Python, &["python3", "pip3"][..], &[][..]),
-        (Stack::Uv, &["uv"][..], &[".cache/uv", "Library/Caches/uv"][..]),
+        (
+            Stack::Uv,
+            &["uv"][..],
+            &[".cache/uv", "Library/Caches/uv"][..],
+        ),
         (Stack::Go, &["go"][..], &["go/pkg"][..]),
         (Stack::Gradle, &["gradle"][..], &[".gradle"][..]),
         (Stack::Docker, &["docker"][..], &[][..]),
@@ -293,20 +296,20 @@ pub fn detect(home: &Path) -> Vec<Found> {
             ][..],
         ),
     ] {
-        if let Some(p) = programs.iter().find_map(|p| on_path(p)) {
-            note(stack, format!("found {}", p.display()));
+        // Report the program name rather than where it happens to live: the
+        // full path is noise, and on someone else's machine it is different
+        // noise.
+        if let Some(p) = programs.iter().find(|p| on_path(p)) {
+            note(stack, format!("{p} is on PATH"));
             continue;
         }
-        if let Some(d) = dirs.iter().map(|d| home.join(d)).find(|d| d.exists()) {
-            note(stack, format!("found {}", d.display()));
+        if let Some(d) = dirs.iter().find(|d| home.join(d).exists()) {
+            note(stack, format!("~/{d} exists"));
         }
     }
 
-    if cfg!(target_os = "macos") {
-        let xcode = home.join("Library/Developer/Xcode");
-        if xcode.exists() {
-            note(Stack::Xcode, format!("found {}", xcode.display()));
-        }
+    if cfg!(target_os = "macos") && home.join("Library/Developer/Xcode").exists() {
+        note(Stack::Xcode, "~/Library/Developer/Xcode exists".to_owned());
     }
 
     found

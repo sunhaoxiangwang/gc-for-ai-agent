@@ -12,7 +12,7 @@ use anyhow::Result;
 use reap_core::plan::PlanOptions;
 use reap_core::time::{human_bytes, human_duration};
 
-use crate::context::Context;
+use crate::context::{home, Context};
 use crate::exit;
 use crate::output::Style;
 use crate::quarantine::Quarantine;
@@ -62,6 +62,8 @@ impl Findings {
 
 pub fn run(ctx: &Context) -> Result<i32> {
     let style = Style::detect(ctx.args.no_color, ctx.args.json);
+    let home = home();
+    let short = |p: &Path| crate::output::tilde(p, home.as_deref());
     let mut f = Findings::default();
     let mut lines: Vec<String> = Vec::new();
 
@@ -71,7 +73,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
 
     // --- configuration -----------------------------------------------------
     say!("{}", style.bold("Configuration"));
-    say!("  file            {}", ctx.config.source.display());
+    say!("  file            {}", short(&ctx.config.source));
     say!("  host            {}", ctx.host);
     match &ctx.config.applied_overlay {
         Some(name) => say!("  machine overlay [machine.\"{name}\"] applied"),
@@ -118,14 +120,14 @@ pub fn run(ctx: &Context) -> Result<i32> {
                 ));
             }
             Ok(md) if md.file_type().is_symlink() => {
-                say!("  {} {}", style.red("FAIL"), root.path.display());
+                say!("  {} {}", style.red("FAIL"), short(&root.path));
                 f.fail(format!(
                     "root {} is a symlink; declare the path it resolves to instead",
                     root.path.display()
                 ));
             }
             Ok(md) if !md.is_dir() => {
-                say!("  {} {}", style.red("FAIL"), root.path.display());
+                say!("  {} {}", style.red("FAIL"), short(&root.path));
                 f.fail(format!("root {} is not a directory", root.path.display()));
             }
             Ok(_) => {
@@ -137,7 +139,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
                         say!(
                             "  {} {}  (depth {}, {n} entries)",
                             style.green("ok  "),
-                            root.path.display(),
+                            short(&root.path),
                             root.max_depth
                         );
                         usable_roots.push(root.path.clone());
@@ -151,7 +153,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
                         f.fail(tcc_message(&root.path));
                     }
                     Err(e) => {
-                        say!("  {} {}  ({e})", style.red("FAIL"), root.path.display());
+                        say!("  {} {}  ({e})", style.red("FAIL"), short(&root.path));
                         f.fail(format!("cannot read {}: {e}", root.path.display()));
                     }
                 }
@@ -162,7 +164,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
     // --- quarantine --------------------------------------------------------
     say!("");
     say!("{}", style.bold("Quarantine"));
-    say!("  directory       {}", ctx.config.quarantine.display());
+    say!("  directory       {}", short(&ctx.config.quarantine));
     match Quarantine::ensure(&ctx.config.quarantine) {
         Err(e) => {
             say!("  {} {e:#}", style.red("FAIL"));
@@ -174,7 +176,7 @@ pub fn run(ctx: &Context) -> Result<i32> {
                     Ok(()) => say!(
                         "  {} rename from {} succeeds",
                         style.green("ok  "),
-                        root.display()
+                        short(root)
                     ),
                     Err(e) => {
                         say!("  {} {e:#}", style.red("FAIL"));
@@ -244,10 +246,14 @@ pub fn run(ctx: &Context) -> Result<i32> {
     // --- heartbeats --------------------------------------------------------
     say!("");
     say!("{}", style.bold("Heartbeats"));
-    say!("  directory       {}", ctx.config.heartbeat_dir.display());
+    say!("  directory       {}", short(&ctx.config.heartbeat_dir));
     match &ctx.heartbeats.unreadable {
-        Some(why) => {
-            say!("  {} {why}", style.dim("none"));
+        Some(_) => {
+            say!(
+                "  {} {} does not exist",
+                style.dim("none"),
+                short(&ctx.config.heartbeat_dir)
+            );
             say!(
                 "  {}",
                 style.dim(

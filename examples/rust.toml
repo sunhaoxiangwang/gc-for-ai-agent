@@ -1,0 +1,65 @@
+# reap: Rust
+#
+# Reclaims Cargo build output and, at tier 2, the shared crate cache.
+#
+# Expect: target/ directories are usually the single biggest thing on a Rust
+# developer's disk. A few active projects easily come to 10-40 GB. The registry
+# cache is typically 1-5 GB.
+#
+# Try it:
+#     reap --config examples/rust.toml report
+#
+# Before you rely on it, read docs/safety-model.md. Nothing here is removed
+# without dry_run = false in this file *and* --apply on the command line.
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 15
+target_free_pct = 25
+max_run_seconds = 300
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+deny = []
+
+[[root]]
+path = "~/code"
+max_depth = 6
+
+# The shared crate cache lives here, not under your code.
+[[root]]
+path = "~/.cargo/registry"
+max_depth = 2
+
+# --- tier 0: near-free to regenerate ---------------------------------------
+
+# The big one. `require_sibling` means only a directory with a Cargo.toml
+# beside it counts, so a folder that merely happens to be named "target" is
+# never touched.
+[[rule]]
+name = "cargo-target"
+kind = "path"
+tier = 0
+dir_name = "target"
+require_sibling = "Cargo.toml"
+min_idle = "48h"
+
+# --- tier 2: shared caches --------------------------------------------------
+
+# Downloaded crate archives and their extracted sources. Removing these means
+# the next build in *every* project re-downloads. Only worth it under real
+# pressure, which is why it is tier 2 and why a plain sweep never touches it.
+[[rule]]
+name = "cargo-registry-cache"
+kind = "path"
+tier = 2
+glob = "~/.cargo/registry/{cache,src}/*"
+min_idle = "60d"
+
+# Prevention beats reclamation here. Setting these in your shell profile stops
+# the duplication happening at all, and usually saves more than this file does:
+#
+#     export CARGO_TARGET_DIR="$HOME/.cache/cargo-target"
+#     export RUSTC_WRAPPER=sccache
+#
+# `reap doctor` tells you which of them are unset.

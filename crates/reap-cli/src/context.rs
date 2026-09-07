@@ -60,9 +60,17 @@ pub struct Context {
 
 /// Hostname used for machine overlays and reported in JSON.
 ///
-/// Falls back to "unknown" rather than failing: a machine that cannot name
-/// itself should still be able to run a dry report.
+/// `REAP_HOSTNAME` overrides it, which is how you check that a
+/// `[machine."..."]` overlay does what you think without finding a machine of
+/// that name. Falls back to "unknown" rather than failing: a machine that
+/// cannot name itself should still be able to run a dry report.
 pub fn hostname() -> String {
+    if let Some(name) = std::env::var("REAP_HOSTNAME")
+        .ok()
+        .filter(|n| !n.is_empty())
+    {
+        return name;
+    }
     hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())

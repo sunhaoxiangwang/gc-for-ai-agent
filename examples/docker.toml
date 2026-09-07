@@ -1,0 +1,65 @@
+# reap: Docker
+#
+# Docker's storage is the daemon's business, so everything here is a command
+# rule: reap asks Docker to clean up rather than removing files underneath it.
+# Removing files from Docker's storage directory corrupts it.
+#
+# Expect: build cache is commonly 5-50 GB on a machine that builds images
+# regularly. Dangling images add several GB more.
+#
+# Try it:
+#     reap --config examples/docker.toml report
+#
+# Note that command rules report what they would run in a dry run, and the
+# amount reclaimed is only known once they have run.
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 15
+target_free_pct = 25
+max_run_seconds = 600
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+deny = []
+
+# Command rules need no root, but reap requires at least one root to exist as
+# a declaration of scope. Point it at your code directory; the rules below
+# ignore it.
+[[root]]
+path = "~/code"
+max_depth = 4
+
+# A path rule is required alongside the command rules only if you want one;
+# this file deliberately has none, so nothing on your filesystem is a
+# candidate. Everything below is Docker cleaning up after itself.
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+# Image layers no tag refers to any more. Rebuilding costs a pull or a build.
+[[rule]]
+name = "docker-dangling-images"
+kind = "command"
+tier = 1
+command = ["docker", "image", "prune", "-f"]
+
+# Stopped containers. Note this does not touch volumes, which hold data.
+[[rule]]
+name = "docker-stopped-containers"
+kind = "command"
+tier = 1
+command = ["docker", "container", "prune", "-f"]
+
+# --- tier 2: shared caches --------------------------------------------------
+
+# The build cache. Losing it means every later build starts cold, which is why
+# it is tier 2 and a plain sweep never touches it.
+[[rule]]
+name = "docker-build-cache"
+kind = "command"
+tier = 2
+command = ["docker", "builder", "prune", "-f"]
+
+# Deliberately absent: `docker volume prune` and `docker system prune
+# --volumes`. Volumes hold data, not caches. If you want them gone, do it
+# yourself, once, having looked at the list.

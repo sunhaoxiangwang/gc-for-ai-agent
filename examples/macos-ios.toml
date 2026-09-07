@@ -1,0 +1,96 @@
+# reap: Xcode and iOS
+#
+# The single most valuable file here for anyone doing Apple platform work.
+# DerivedData and unavailable simulator runtimes routinely account for tens of
+# gigabytes, and none of the other recipes touch them.
+#
+# Expect: DerivedData is commonly 20-80 GB on a machine with a few active
+# projects. Unavailable simulators add several GB more. Device support files
+# for iOS versions you no longer target add a few GB again.
+#
+# Try it:
+#     reap --config examples/macos-ios.toml report
+#
+# macOS note: a scheduled job cannot read ~/Library without Full Disk Access,
+# and the denial is silent rather than a prompt. `reap doctor` detects this and
+# prints the exact place to fix it.
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 15
+target_free_pct = 25
+
+# APFS reports space held by Time Machine local snapshots as used even though
+# the kernel releases it on demand. Without this allowance a low-water trigger
+# fires over space the machine already has.
+apfs_snapshot_slack_gb = 20
+
+max_run_seconds = 600
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+deny = []
+
+[[root]]
+path = "~/Library/Developer/Xcode/DerivedData"
+max_depth = 1
+
+[[root]]
+path = "~/Library/Developer/Xcode/iOS DeviceSupport"
+max_depth = 1
+
+[[root]]
+path = "~/Library/Developer/CoreSimulator/Caches"
+max_depth = 2
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+# One directory per project. Xcode rebuilds it on the next build; the cost is
+# a full clean build, which is minutes rather than seconds, hence tier 1.
+[[rule]]
+name = "xcode-derived-data"
+kind = "path"
+tier = 1
+glob = "~/Library/Developer/Xcode/DerivedData/*"
+min_idle = "48h"
+os = ["macos"]
+
+# Symbol files for iOS versions you have attached a device running. Re-created
+# the next time you connect such a device, which for old versions is never.
+[[rule]]
+name = "ios-device-support"
+kind = "path"
+tier = 1
+glob = "~/Library/Developer/Xcode/iOS DeviceSupport/*"
+min_idle = "90d"
+os = ["macos"]
+
+# Simulator runtimes whose SDK is no longer installed. Removed by Xcode's own
+# tool, which knows what "unavailable" means better than a glob does.
+[[rule]]
+name = "xcode-unavailable-simulators"
+kind = "command"
+tier = 1
+command = ["xcrun", "simctl", "delete", "unavailable"]
+os = ["macos"]
+
+# --- tier 2: shared caches --------------------------------------------------
+
+[[rule]]
+name = "coresimulator-caches"
+kind = "path"
+tier = 2
+glob = "~/Library/Developer/CoreSimulator/Caches/*"
+min_idle = "60d"
+os = ["macos"]
+
+# Not included, deliberately:
+#
+#   ~/Library/Developer/Xcode/Archives      your shipped builds and dSYMs.
+#                                           You need these to symbolicate a
+#                                           crash report from a release.
+#   ~/Library/Developer/CoreSimulator/Devices
+#                                           simulator contents, including any
+#                                           state you set up by hand.
+#
+# If you want them gone, remove them deliberately rather than on a timer.

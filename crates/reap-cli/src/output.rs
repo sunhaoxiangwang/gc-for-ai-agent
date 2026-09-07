@@ -146,6 +146,45 @@ pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     path.display().to_string()
 }
 
+/// Replaces the home directory with `~` anywhere it appears in a message.
+///
+/// Guard verdicts are built in `reap-core`, which has no opinion about how a
+/// path should be displayed. Shortening them here keeps the long absolute paths
+/// out of `explain` output without teaching the core about presentation.
+pub struct Shortener {
+    forms: Vec<String>,
+}
+
+impl Shortener {
+    pub fn new(home: Option<&std::path::Path>) -> Self {
+        let mut forms = Vec::new();
+        if let Some(h) = home {
+            // Both spellings: the home directory as configured, and what it
+            // resolves to. On macOS these differ whenever a path runs through
+            // /tmp or /var, both of which are symlinks.
+            if let Ok(canonical) = h.canonicalize() {
+                if canonical != h {
+                    forms.push(canonical.display().to_string());
+                }
+            }
+            forms.push(h.display().to_string());
+            // Longest first, so a prefix never shadows a longer match.
+            forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+        }
+        Self { forms }
+    }
+
+    pub fn apply(&self, text: &str) -> String {
+        let mut out = text.to_owned();
+        for form in &self.forms {
+            if form.len() > 1 {
+                out = out.replace(form.as_str(), "~");
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +200,39 @@ mod tests {
         assert_eq!(lines[0], "PATH      SIZE");
         assert_eq!(lines[2], "a          1 B");
         assert_eq!(lines[3], "longer  12 GiB");
+    }
+
+    #[test]
+    fn the_shortener_replaces_home_anywhere_in_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let s = Shortener::new(Some(home));
+        let message = format!(
+            "{}/code/x is a symlink, so {}/code/y is reached through one",
+            home.display(),
+            home.display()
+        );
+        assert_eq!(
+            s.apply(&message),
+            "~/code/x is a symlink, so ~/code/y is reached through one"
+        );
+    }
+
+    #[test]
+    fn the_shortener_handles_a_home_that_resolves_elsewhere() {
+        // On macOS a tempdir under /var or /tmp canonicalizes to /private/...,
+        // and guard messages can carry either spelling.
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let canonical = home.canonicalize().unwrap();
+        let s = Shortener::new(Some(home));
+        assert_eq!(s.apply(&format!("{}/code", canonical.display())), "~/code");
+        assert_eq!(s.apply(&format!("{}/code", home.display())), "~/code");
+    }
+
+    #[test]
+    fn the_shortener_without_a_home_changes_nothing() {
+        assert_eq!(Shortener::new(None).apply("/opt/build"), "/opt/build");
     }
 
     #[test]

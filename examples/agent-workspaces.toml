@@ -1,0 +1,142 @@
+# reap: machines running unattended jobs
+#
+# For a machine where something else checks out repositories, builds them, runs
+# a headless browser and writes temporary files, then does not always clean up.
+# CI runners, build farms and machines running coding agents all have this
+# shape. The reason cleanup gets skipped is structural: it is the last step,
+# and the process that made the mess is often dead by the time it is due, having
+# timed out, run out of context, crashed mid-build, or been killed.
+#
+# The integration has three parts, and the third is what makes it work:
+#
+#   1. Your supervisor writes a heartbeat file per running job. reap refuses to
+#      touch anything a live heartbeat claims.
+#   2. Your supervisor calls `reap gc-session <id>` on every exit path,
+#      including crashes. It is safe on an unknown id and safe to call twice.
+#   3. A timer runs `reap sweep --until-free 25 --apply` regardless. This is
+#      the part that catches whatever step 2 missed, and it is the only part
+#      that does not depend on a process choosing to run it.
+#
+# The heartbeat contract is in docs/configuration.md. Briefly: one JSON file per
+# job at <heartbeat_dir>/<session-id>.json, rewritten at least every
+# interval_seconds, naming the workspace it owns.
+#
+# Try it:
+#     reap --config examples/agent-workspaces.toml report
+
+[global]
+dry_run = true
+
+# Put quarantine on the same filesystem as the workspaces, not in a home
+# directory that might be on a different volume. `reap doctor` proves it with
+# a real test rename.
+quarantine = "/var/lib/reap/quarantine"
+
+low_water_pct = 20
+target_free_pct = 35
+
+# Machines like this fill up fast, so sweep often and keep each run short.
+max_run_seconds = 180
+
+pin_marker = ".reap-keep"
+heartbeat_dir = "/var/run/reap/heartbeats"
+
+# A heartbeat is live until it is this many intervals stale. Raise it if your
+# supervisor's heartbeat writes can be delayed by load.
+heartbeat_staleness_multiplier = 3.0
+
+deny = []
+
+# One directory per job.
+[[root]]
+path = "/var/lib/agent/workspaces"
+max_depth = 5
+
+[[root]]
+path = "/var/lib/agent/tmp"
+max_depth = 2
+
+# Per-machine overrides let this file live in a shared repository. A root that
+# does not exist on a given host is skipped with a warning, not an error.
+#
+# [machine."builder-01"]
+# target_free_pct = 45
+
+# --- tier 0: near-free to regenerate ---------------------------------------
+
+# A whole abandoned workspace. `orphaned_only` means this rule needs positive
+# evidence that nothing owns the directory: the heartbeat directory must be
+# readable, and nothing in it may claim the path. If reap cannot read the
+# heartbeat directory it refuses rather than assuming the job is gone.
+#
+# The idle window is short because these are cheap: the job that owned this
+# workspace is finished, and its checkout is reproducible from a git remote.
+[[rule]]
+name = "orphaned-workspace"
+kind = "path"
+tier = 0
+glob = "/var/lib/agent/workspaces/*"
+orphaned_only = true
+min_idle = "2h"
+
+[[rule]]
+name = "orphaned-session-tmp"
+kind = "path"
+tier = 0
+glob = "/var/lib/agent/tmp/*"
+orphaned_only = true
+min_idle = "2h"
+
+[[rule]]
+name = "python-bytecode"
+kind = "path"
+tier = 0
+dir_name = "__pycache__"
+min_idle = "1h"
+
+[[rule]]
+name = "cargo-target"
+kind = "path"
+tier = 0
+dir_name = "target"
+require_sibling = "Cargo.toml"
+min_idle = "6h"
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+[[rule]]
+name = "node-modules"
+kind = "path"
+tier = 1
+dir_name = "node_modules"
+require_sibling = "package.json"
+min_idle = "24h"
+
+# Headless browser downloads. On a machine that runs browser tests these are
+# re-downloaded per checkout unless you set PLAYWRIGHT_BROWSERS_PATH, which you
+# should; `reap doctor` tells you whether you have.
+[[rule]]
+name = "playwright-browsers"
+kind = "path"
+tier = 1
+glob = "/var/lib/agent/workspaces/*/node_modules/.cache/ms-playwright"
+min_idle = "24h"
+
+[[rule]]
+name = "docker-dangling-images"
+kind = "command"
+tier = 1
+command = ["docker", "image", "prune", "-f"]
+
+# --- tier 2: shared caches --------------------------------------------------
+
+[[rule]]
+name = "docker-build-cache"
+kind = "command"
+tier = 2
+command = ["docker", "builder", "prune", "-f"]
+
+# The boundary that matters: the only thing a job is permitted to do about disk
+# space is invoke `reap sweep --apply` or `reap gc-session <id> --apply`. It
+# computes no paths of its own and runs no removal command of its own. Every
+# decision about what may be deleted lives in this file.

@@ -8,7 +8,7 @@ use reap_core::time::{human_bytes, human_duration, rfc3339};
 use crate::cli::ReportArgs;
 use crate::context::{home, Context};
 use crate::exit;
-use crate::output::{tilde, Style, Table};
+use crate::output::{tilde, Shortener, Style, Table};
 use crate::select::select;
 
 pub fn run(ctx: &Context, args: &ReportArgs) -> Result<i32> {
@@ -71,6 +71,7 @@ pub fn run(ctx: &Context, args: &ReportArgs) -> Result<i32> {
 fn print_human(ctx: &Context, report: &RunReport, show_all: bool) {
     let style = Style::detect(ctx.args.no_color, ctx.args.json);
     let home = home();
+    let short = Shortener::new(home.as_deref());
 
     if ctx.args.quiet {
         println!(
@@ -118,7 +119,7 @@ fn print_human(ctx: &Context, report: &RunReport, show_all: bool) {
                     c.rule.clone(),
                     c.rejected_by.clone().unwrap_or_default(),
                     tilde(std::path::Path::new(&c.path), home.as_deref()),
-                    c.reason.clone().unwrap_or_default(),
+                    short.apply(&c.reason.clone().unwrap_or_default()),
                 ]);
             }
             println!("{}", style.bold("Matched but held back by a guard"));

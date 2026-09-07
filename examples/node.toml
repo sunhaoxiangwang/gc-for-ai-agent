@@ -1,0 +1,70 @@
+# reap: Node, npm and pnpm
+#
+# Reclaims node_modules trees and, at tier 2, the package manager caches.
+#
+# Expect: node_modules is rarely under 200 MB and often over 1 GB per project.
+# A laptop with twenty checked-out projects is carrying 10-20 GB of it.
+#
+# Try it:
+#     reap --config examples/node.toml report
+
+[global]
+dry_run = true
+quarantine = "~/.cache/reap/quarantine"
+low_water_pct = 15
+target_free_pct = 25
+max_run_seconds = 300
+pin_marker = ".reap-keep"
+heartbeat_dir = "~/.cache/reap/heartbeats"
+deny = []
+
+[[root]]
+path = "~/code"
+max_depth = 6
+
+# --- tier 1: regenerable, costs real time -----------------------------------
+
+# A reinstall costs minutes and bandwidth, so this is tier 1 rather than 0, and
+# the idle window is long. `require_sibling` keeps it to real project trees.
+#
+# Note that a nested node_modules inside another one is never proposed
+# separately: reap does not descend into a directory it has already selected.
+[[rule]]
+name = "node-modules"
+kind = "path"
+tier = 1
+dir_name = "node_modules"
+require_sibling = "package.json"
+min_idle = "14d"
+
+# Build output from the common bundlers and frameworks. Named explicitly rather
+# than by pattern, because "dist" and "build" are also perfectly ordinary names
+# for directories full of things you wrote yourself. The git-ignore guard is
+# what makes this safe: anything your repository tracks is refused.
+[[rule]]
+name = "js-build-output"
+kind = "path"
+tier = 1
+glob = "**/{.next,.nuxt,.svelte-kit,.turbo,.parcel-cache}"
+min_idle = "14d"
+
+# --- tier 2: shared caches --------------------------------------------------
+
+# pnpm keeps one content-addressed store for every project. Prune it with pnpm
+# itself rather than removing files: the store's layout is pnpm's business.
+[[rule]]
+name = "pnpm-store"
+kind = "command"
+tier = 2
+command = ["pnpm", "store", "prune"]
+
+# `npm cache verify` also drops entries it cannot use.
+[[rule]]
+name = "npm-cache"
+kind = "command"
+tier = 2
+command = ["npm", "cache", "verify"]
+
+# Prevention: pnpm already shares one store across projects, which is most of
+# the reason to use it. If you are on npm, `npm ci` in CI and a shared cache
+# directory do the same job.

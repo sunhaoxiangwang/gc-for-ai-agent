@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build (for a dry run without publishing)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          # Both Linux targets are cross-compiled from one x86_64 runner with
+          # cargo-zigbuild. musl gives a static binary with no glibc version
+          # coupling, so one artifact works on any distribution.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            zig: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            zig: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install zig and cargo-zigbuild
+        if: matrix.zig
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.zig }}" = "true" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }} -p reap-cli
+          else
+            cargo build --release --target ${{ matrix.target }} -p reap-cli
+          fi
+
+      # A musl build that turns out to be dynamically linked defeats the point.
+      - name: Check the Linux binaries are static
+        if: matrix.zig
+        run: |
+          file target/${{ matrix.target }}/release/reap
+          if file target/${{ matrix.target }}/release/reap | grep -q "dynamically linked"; then
+            echo "expected a static binary from a musl target" >&2
+            exit 1
+          fi
+
+      - name: Package
+        id: package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
+            version="${{ inputs.tag }}"
+            version="${version#v}"
+          fi
+          name="reap-${version}-${{ matrix.target }}"
+          mkdir -p "dist-out/${name}"
+          cp "target/${{ matrix.target }}/release/reap" "dist-out/${name}/"
+          cp README.md LICENSE LICENSE-MIT LICENSE-APACHE "dist-out/${name}/"
+          tar -czf "dist-out/${name}.tar.gz" -C "dist-out/${name}" .
+          echo "archive=dist-out/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # All four targets or nothing. A release missing a platform is worse than
+      # a release that is late.
+      - name: Check every target is present
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin \
+                        x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            ls artifacts/*"${target}".tar.gz >/dev/null \
+              || { echo "missing artifact for ${target}" >&2; exit 1; }
+          done
+
+      - name: Extract the changelog entry for this version
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no entry for ${version}" >&2
+            exit 1
+          fi
+          cat notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          body_path: notes.md
+          fail_on_unmatched_files: true
+
+  crates-io:
+    name: publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # In dependency order. Each has to be on the index before the next one
+      # can resolve it, and the index takes a moment to catch up.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p reap-platform
+          sleep 30
+          cargo publish -p reap-core
+          sleep 30
+          cargo publish -p reap-cli

@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Formatting and lints once, on the cheapest runner. There is no point paying
+  # for four machines to disagree about whitespace.
+  lint:
+    name: fmt and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS aarch64
+            os: macos-14
+          - name: macOS x86_64
+            os: macos-13
+          - name: Linux x86_64
+            os: ubuntu-latest
+          - name: Linux aarch64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The git-ignore guard shells out to git, and the fixtures build real
+      # repositories, so git has to be configured enough to run `git init`.
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+      # Every example must load and pass doctor. Some describe servers and
+      # declare absolute system paths; create them here rather than editing the
+      # examples into something we do not ship.
+      - name: Provision paths the server-shaped examples declare
+        run: |
+          sudo mkdir -p /var/lib/reap/quarantine \
+                        /var/run/reap/heartbeats \
+                        /var/lib/agent/workspaces \
+                        /var/lib/agent/tmp
+          sudo chown -R "$(id -u):$(id -g)" /var/lib/reap /var/run/reap /var/lib/agent
+
+      - name: Validate every shipped example
+        run: scripts/validate-examples.sh target/debug/reap
+
+  # Prove the release targets still compile, without waiting for a tag to find
+  # out. Type checking only; the release workflow does the real builds.
+  cross-check:
+    name: check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings
+
+  # The install script is user-facing and runs before anyone can read the code,
+  # so at minimum it must parse and pass shellcheck.
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck dist/install.sh scripts/validate-examples.sh
+      - run: sh -n dist/install.sh
+
+  # A build with the release profile, because LTO and codegen-units=1 have
+  # caught things a debug build did not.
+  release-build:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release
+      - run: ./target/release/reap --version

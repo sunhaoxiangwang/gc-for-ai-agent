@@ -21,9 +21,18 @@ if [ ! -x "$REAP" ]; then
     echo "no reap binary at $REAP; build it first with: cargo build" >&2
     exit 1
 fi
+# Resolve now, because HOME is redirected below and a relative path would still
+# work but an unqualified one in $PATH might not.
+REAP="$(cd "$(dirname "$REAP")" && pwd)/$(basename "$REAP")"
+REPO_ROOT="$(pwd)"
 
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
+
+# The examples declare roots under ~, so this script gives them a home
+# directory of its own. It must never write into the real one: a validation
+# script that leaves a ~/code/sample behind on a contributor's machine is a bug.
+export HOME="$FIXTURE"
 
 # A small tree that looks like real work, so the examples have something to
 # match and doctor exercises more than "this root does not exist".
@@ -49,8 +58,8 @@ done
 
 status=0
 skipped=0
-for config in examples/*.toml; do
-    printf '%-34s ' "$config"
+for config in "$REPO_ROOT"/examples/*.toml; do
+    printf '%-34s ' "examples/$(basename "$config")"
     if output="$("$REAP" --no-color --config "$config" doctor 2>&1)"; then
         echo "ok"
         continue
@@ -70,7 +79,7 @@ for config in examples/*.toml; do
 done
 
 # Every example must also survive `report`, which is what a reader runs first.
-for config in examples/*.toml; do
+for config in "$REPO_ROOT"/examples/*.toml; do
     "$REAP" --no-color --config "$config" report --json > /dev/null || {
         # Exit 3 means nothing matched, which is a legitimate outcome here.
         code=$?

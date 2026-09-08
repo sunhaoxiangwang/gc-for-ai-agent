@@ -221,6 +221,81 @@ and the log integration, but the command is the same:
 Use a minute other than 0 so you are not competing with everything else on the
 machine.
 
+## Scheduling the observation period first
+
+The README asks you to run `reap report` for a few days before arming anything.
+That advice is easy to give and easy to forget, so it is worth scheduling too.
+
+An observation agent runs `report --json` on a timer and appends the result to a
+log. It cannot delete: `report` has no mutation path at all, whatever the config
+says. After a week you have a record of exactly what would have been reclaimed,
+which is the evidence you actually want before setting `dry_run = false`.
+
+Do not use `reap install` for this. That generates a `sweep --apply` unit, and
+running it against a config that still says `dry_run = true` exits 2 every time
+by design, so an unarmed scheduler shows up as a failure rather than succeeding
+quietly. Observation wants a different command.
+
+### macOS
+
+Write `~/Library/LaunchAgents/io.github.reap.observe.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.reap.observe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>mkdir -p "$HOME/.cache/reap/observations" &amp;&amp; /usr/local/bin/reap --no-color --json report --tier 2 --all &gt;&gt; "$HOME/.cache/reap/observations/$(date +%Y-%m-%d).json"</string>
+  </array>
+  <key>StartInterval</key><integer>21600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+</dict>
+</plist>
+```
+
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.reap.observe.plist
+```
+
+### Linux
+
+```sh
+systemd-run --user --on-calendar='*-*-* 06,18:00:00' --unit=reap-observe \
+  /bin/sh -c 'mkdir -p "$HOME/.cache/reap/observations" && reap --no-color --json report --tier 2 --all >> "$HOME/.cache/reap/observations/$(date +%%Y-%%m-%%d).json"'
+```
+
+### Reading the result
+
+Every path that was ever selected, across the whole period:
+
+```sh
+cat ~/.cache/reap/observations/*.json \
+  | grep -o '"path": "[^"]*"' | sort -u
+```
+
+Read that list. If everything on it is something you would have deleted by hand
+without thinking about it, you are ready to set `dry_run = false`. If anything
+on it makes you pause, that is a rule to narrow or a `.reap-keep` to place, and
+it is much cheaper to learn now.
+
+### Stopping it
+
+```sh
+# macOS
+launchctl bootout gui/$(id -u)/io.github.reap.observe
+rm ~/Library/LaunchAgents/io.github.reap.observe.plist
+
+# Linux
+systemctl --user stop reap-observe.timer
+```
+
 ## What to schedule
 
 The generated units run:

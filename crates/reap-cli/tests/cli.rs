@@ -1180,3 +1180,51 @@ fn doctor_warns_but_does_not_fail_when_free_space_is_below_the_low_water_mark() 
     );
     assert!(!text.contains("failure:"), "{text}");
 }
+
+/// An escalating sweep that reclaims at tier 0 and finds nothing above it has
+/// still done work, and must say so.
+///
+/// This was a real bug: `--until-free` returned the last tier's exit code, so a
+/// run that freed gigabytes at tier 0 and then found tiers 1 and 2 empty exited
+/// 3, "nothing to do". A scheduler would have recorded that as no work done.
+#[test]
+fn until_free_reports_success_when_any_tier_reclaimed() {
+    let t = Tree::new();
+    // 100% free is unreachable, so the sweep escalates through every tier and
+    // the final pass is guaranteed to be empty.
+    let text = std::fs::read_to_string(&t.config).unwrap();
+    std::fs::write(
+        &t.config,
+        text.replace("dry_run = true", "dry_run = false\ntarget_free_pct = 100"),
+    )
+    .unwrap();
+
+    let out = t
+        .reap()
+        .args(["sweep", "--until-free", "100", "--apply"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !t.target().exists(),
+        "the tier 0 candidate was not reclaimed"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(SUCCESS),
+        "a sweep that reclaimed something reported nothing to do:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // With nothing left anywhere, the same command is genuinely a no-op.
+    let again = t
+        .reap()
+        .args(["sweep", "--until-free", "100", "--apply"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        again.status.code(),
+        Some(NOTHING_TO_DO),
+        "an empty escalating sweep should report nothing to do"
+    );
+}

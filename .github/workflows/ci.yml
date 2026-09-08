@@ -197,7 +197,17 @@ jobs:
             echo "systemctl --user unavailable; running the unit's own ExecStart"
             exec_start=$(sed -n 's/^ExecStart=//p' "$FIX/home/.config/systemd/user/reap.service")
             echo "ExecStart: $exec_start"
-            HOME="$FIX/home" sh -c "$exec_start"
+            # Capture the status rather than letting `set -e` abort here, so the
+            # assertions below always run and report what actually happened.
+            rc=0
+            HOME="$FIX/home" sh -c "$exec_start" || rc=$?
+            echo "exit code: $rc"
+            # A sweep that reclaimed something must report success. Exit 3
+            # would mean "nothing to do", which after real work is a lie.
+            if [ "$rc" -ne 0 ]; then
+              echo "the unit's command exited $rc; expected 0 after reclaiming" >&2
+              exit 1
+            fi
           fi
 
           # The point of the whole job: the build directory is gone and the

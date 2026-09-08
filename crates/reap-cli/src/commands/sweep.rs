@@ -99,7 +99,11 @@ fn until_free(ctx: &Context, args: &SweepArgs, target_pct: u8) -> Result<i32> {
         Some(false) => {}
     }
 
-    let mut last = exit::NOTHING_TO_DO;
+    // Aggregate across tiers rather than keeping the last tier's code. An
+    // escalating sweep that reclaims at tier 0 and then finds nothing at tiers
+    // 1 and 2 has done work, and must not report "nothing to do" just because
+    // the final pass was empty.
+    let mut overall = exit::NOTHING_TO_DO;
     for tier in 0..=reap_core::config::Tier::MAX {
         let opts = PlanOptions {
             now: ctx.started_at,
@@ -107,7 +111,10 @@ fn until_free(ctx: &Context, args: &SweepArgs, target_pct: u8) -> Result<i32> {
             ..Default::default()
         };
         let sel = select(ctx, opts);
-        last = execute(ctx, sel, args.apply, tier, "sweep", Some(tier))?;
+        overall = combine(
+            overall,
+            execute(ctx, sel, args.apply, tier, "sweep", Some(tier))?,
+        );
 
         // Without --apply nothing was freed, so re-checking would loop through
         // every tier reporting the same shortfall. Show the full escalation
@@ -122,7 +129,7 @@ fn until_free(ctx: &Context, args: &SweepArgs, target_pct: u8) -> Result<i32> {
                     style.bold(&format!("Reached the {target_pct}% target at tier {tier}."))
                 );
             }
-            return Ok(last);
+            return Ok(overall);
         }
     }
 
@@ -139,7 +146,27 @@ fn until_free(ctx: &Context, args: &SweepArgs, target_pct: u8) -> Result<i32> {
             ))
         );
     }
-    Ok(last)
+    Ok(overall)
+}
+
+/// Folds two exit codes into the one that describes the run as a whole.
+///
+/// Precedence, most to least significant: a configuration problem, a partial
+/// failure, work done, nothing to do. "Nothing to do" is the weakest: any tier
+/// that actually reclaimed something outranks any number of empty passes.
+fn combine(a: i32, b: i32) -> i32 {
+    let rank = |code: i32| match code {
+        exit::CONFIG => 4,
+        exit::INTERNAL => 3,
+        exit::PARTIAL => 2,
+        exit::SUCCESS => 1,
+        _ => 0,
+    };
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
 }
 
 /// Runs a prepared selection, applying it when both opt-ins allow.

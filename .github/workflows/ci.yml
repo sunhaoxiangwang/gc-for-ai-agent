@@ -89,6 +89,137 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings
 
+  # Prove the systemd path end to end on a real Linux machine: generate the
+  # units from a config, verify them with systemd's own parser, then actually
+  # run the service and check it reclaimed something. Without this, the Linux
+  # half of scheduling is only ever asserted by a unit-text test.
+  systemd:
+    name: systemd unit fires and reclaims
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p reap-cli
+
+      - name: Configure git
+        run: |
+          git config --global user.email "ci@example.com"
+          git config --global user.name "CI"
+          git config --global init.defaultBranch main
+
+      - name: Build a disposable workspace and an armed config
+        id: fixture
+        run: |
+          set -eux
+          FIX="$RUNNER_TEMP/systemd-fixture"
+          mkdir -p "$FIX/home/.config/reap" "$FIX/home/code/proj/target/debug"
+          : > "$FIX/home/code/proj/Cargo.toml"
+          head -c 4000000 /dev/urandom > "$FIX/home/code/proj/target/debug/blob"
+          git -C "$FIX/home/code/proj" init -q
+          printf '/target\n' > "$FIX/home/code/proj/.gitignore"
+
+          # Written with printf rather than a heredoc: inside a YAML block
+          # scalar the closing delimiter cannot sit at column 0, and an
+          # indented one does not terminate a heredoc.
+          #
+          # target_free_pct = 100 is deliberate. The generated unit runs
+          # `sweep --until-free`, which correctly does nothing on a machine that
+          # already has enough free space, and a CI runner usually does. Asking
+          # for 100% free forces the pressure path, so the assertion below
+          # depends on reap rather than on the runner's spare disk.
+          printf '%s\n' \
+            '[global]' \
+            'dry_run = false' \
+            "quarantine = \"$FIX/home/.cache/reap/quarantine\"" \
+            "heartbeat_dir = \"$FIX/home/.cache/reap/heartbeats\"" \
+            'max_run_seconds = 120' \
+            'target_free_pct = 100' \
+            '' \
+            '[[root]]' \
+            "path = \"$FIX/home/code\"" \
+            'max_depth = 4' \
+            '' \
+            '[[rule]]' \
+            'name = "cargo-target"' \
+            'kind = "path"' \
+            'tier = 0' \
+            'dir_name = "target"' \
+            'require_sibling = "Cargo.toml"' \
+            'min_idle = "0s"' \
+            > "$FIX/home/.config/reap/reap.toml"
+          cat "$FIX/home/.config/reap/reap.toml"
+          mkdir -p "$FIX/home/.cache/reap/quarantine"
+          echo "fix=$FIX" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the units
+        run: |
+          set -eux
+          FIX="${{ steps.fixture.outputs.fix }}"
+          # Activation is expected to be the part that may not work in CI; the
+          # unit files must be written regardless, so failure here is tolerated
+          # and the units are checked directly below.
+          HOME="$FIX/home" ./target/release/reap --no-color \
+            --config "$FIX/home/.config/reap/reap.toml" install --systemd || true
+          cat "$FIX/home/.config/systemd/user/reap.service"
+          cat "$FIX/home/.config/systemd/user/reap.timer"
+
+      # systemd's own parser, which catches a directive we spelled wrong or a
+      # value it will not accept. A unit that only a human has read is not
+      # verified.
+      - name: Verify the units with systemd-analyze
+        run: |
+          set -eux
+          FIX="${{ steps.fixture.outputs.fix }}"
+          systemd-analyze verify "$FIX/home/.config/systemd/user/reap.service"
+          systemd-analyze verify "$FIX/home/.config/systemd/user/reap.timer"
+
+      - name: Run the service and check it reclaimed
+        run: |
+          set -eux
+          FIX="${{ steps.fixture.outputs.fix }}"
+          test -d "$FIX/home/code/proj/target"
+
+          ran=no
+          if systemctl --user daemon-reload 2>/dev/null; then
+            if systemctl --user start reap.service 2>/dev/null; then
+              # oneshot: start returns when it has finished.
+              systemctl --user status reap.service --no-pager || true
+              journalctl --user -u reap.service --no-pager -n 30 || true
+              ran=yes
+            fi
+          fi
+
+          if [ "$ran" = "no" ]; then
+            # No user manager in this environment. Run exactly the command line
+            # the generated unit contains, so the unit's ExecStart is still
+            # what gets exercised rather than a command we retyped.
+            echo "systemctl --user unavailable; running the unit's own ExecStart"
+            exec_start=$(sed -n 's/^ExecStart=//p' "$FIX/home/.config/systemd/user/reap.service")
+            echo "ExecStart: $exec_start"
+            HOME="$FIX/home" sh -c "$exec_start"
+          fi
+
+          # The point of the whole job: the build directory is gone and the
+          # source beside it is not.
+          if [ -d "$FIX/home/code/proj/target" ]; then
+            echo "the service ran but did not reclaim the build directory" >&2
+            exit 1
+          fi
+          test -f "$FIX/home/code/proj/Cargo.toml"
+          test -d "$FIX/home/code/proj/.git"
+          echo "reclaimed the build directory, left the source and repository alone"
+
+      - name: Uninstall leaves config and data alone
+        run: |
+          set -eux
+          FIX="${{ steps.fixture.outputs.fix }}"
+          HOME="$FIX/home" ./target/release/reap --no-color \
+            --config "$FIX/home/.config/reap/reap.toml" uninstall --systemd
+          test ! -f "$FIX/home/.config/systemd/user/reap.service"
+          test ! -f "$FIX/home/.config/systemd/user/reap.timer"
+          test -f "$FIX/home/.config/reap/reap.toml"
+
   # The install script is user-facing and runs before anyone can read the code,
   # so at minimum it must parse and pass shellcheck.
   shell:

@@ -1,5 +1,9 @@
 # reap
 
+[![crates.io](https://img.shields.io/crates/v/reap-cli.svg)](https://crates.io/crates/reap-cli)
+[![docs.rs](https://img.shields.io/docsrs/reap-core)](https://docs.rs/reap-core)
+[![CI](https://github.com/sunhaoxiangwang/gc-for-ai-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sunhaoxiangwang/gc-for-ai-agent/actions/workflows/ci.yml)
+
 `reap` reclaims disk space taken by build artifacts, dependency trees and tool
 caches. You declare what is disposable in one TOML file, and a scheduler runs it
 on a timer. It works the same way on macOS and Linux. It never deletes anything
@@ -82,17 +86,49 @@ hand.
 ### From crates.io
 
 ```sh
-cargo install reap-cli
+cargo install reap-cli --locked
 ```
 
 The crate is `reap-cli`; the binary it installs is `reap`. (The name `reap` on
-crates.io belongs to an unrelated project.)
+crates.io belongs to an unrelated project.) `--locked` builds against the
+dependency versions in the published `Cargo.lock`, which is the combination CI
+tested; without it you get whatever resolves today.
+
+Cargo puts the binary in `~/.cargo/bin`. If `reap: command not found` follows an
+install that reported success, that directory is not on your `PATH`. Add it by
+sourcing the snippet rustup already wrote:
+
+```sh
+echo '. "$HOME/.cargo/env"' >> ~/.zshenv   # or ~/.bashrc
+```
+
+Re-run the same install command to upgrade once a newer version is published.
+
+### As a library
+
+The rule engine is published separately, for embedding the matching and
+planning logic in something else:
+
+```sh
+cargo add reap-core
+```
+
+`reap-core` holds the config schema, the walker, the planner and the guard
+stack. It contains no filesystem write code at all: every deletion path lives
+in `reap-cli`, so a program that depends on `reap-core` can decide what *would*
+be reclaimed without linking anything that can remove a file. `reap-platform`
+sits below it and covers process inspection and volume statistics.
+
+API documentation is on docs.rs: [reap-core](https://docs.rs/reap-core),
+[reap-platform](https://docs.rs/reap-platform).
 
 ### From source
 
+Requires Rust 1.82 or newer.
+
 ```sh
 git clone https://github.com/sunhaoxiangwang/gc-for-ai-agent
-cd reap
+cd gc-for-ai-agent
 cargo build --release
 ```
 
